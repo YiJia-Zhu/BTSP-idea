@@ -1,0 +1,2 @@
+method,n,overall_acc_mean,overall_acc_std,target_acc_mean,target_acc_std,loss_mean,train_time_sec_mean
+bptt_rnn,3,1.0,0.0,1.0,0.0,0.0002157719883725118,40.49718036005894

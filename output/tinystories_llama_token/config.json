@@ -1,0 +1,36 @@
+{
+  "train_file": "/private/zhenningshi/idea/data/TinyStories-train.txt",
+  "valid_file": "/private/zhenningshi/idea/data/TinyStories-valid.txt",
+  "tokenizer_dir": "/private/zhenningshi/model_weights/Llama-3.2-1B-Instruct",
+  "out_dir": "output/tinystories_llama_token",
+  "train_chars": 1000000,
+  "valid_chars": 100000,
+  "max_vocab": 1024,
+  "embed_dim": 64,
+  "hidden_dim": 128,
+  "seq_len": 64,
+  "lstm_updates": 1000,
+  "lr": 0.003,
+  "grad_clip": 2.0,
+  "eval_every": 200,
+  "eval_batches": 32,
+  "sample_len": 120,
+  "sample_temperature": 0.8,
+  "plastic_temperature": 0.8,
+  "seed": 0,
+  "stdp": {
+    "a_plus": 0.008,
+    "a_minus": 0.003,
+    "trace_decay": 0.65,
+    "row_decay": 0.9995,
+    "epochs": 1
+  },
+  "btsp": {
+    "potentiation": 0.008,
+    "heterosynaptic_depression": 0.001,
+    "trace_decay": 0.82,
+    "row_decay": 0.9995,
+    "max_weight": 8.0,
+    "epochs": 1
+  }
+}
