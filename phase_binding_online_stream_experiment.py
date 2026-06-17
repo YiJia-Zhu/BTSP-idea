@@ -837,6 +837,1171 @@ class OutputFatigueMemory:
         return int(self.base.active_contexts())
 
 
+class LoopPressureInhibitionMemory:
+    """
+    Dynamic local inhibition for repeated-output attractors.
+
+    A decaying output activity trace estimates whether the current output stream
+    is revisiting the same winner.  The loop pressure is a transient neural
+    state used directly in scoring; it is updated from observed targets during
+    stream evaluation and from predicted tokens during generation.
+    """
+
+    def __init__(
+        self,
+        base: Any,
+        strength: float,
+        activity_decay: float,
+        pressure_decay: float,
+        threshold: float,
+        clip: float,
+        repeat_gain: float,
+        transition_strength: float,
+        transition_decay: float,
+        transition_threshold: float,
+        transition_clip: float,
+        transition_gain: float,
+    ) -> None:
+        self.base = base
+        self.strength = max(float(strength), 0.0)
+        self.activity_decay = float(np.clip(activity_decay, 0.0, 0.999))
+        self.pressure_decay = float(np.clip(pressure_decay, 0.0, 0.999))
+        self.threshold = max(float(threshold), 0.0)
+        self.clip = max(float(clip), 1e-6)
+        self.repeat_gain = max(float(repeat_gain), 0.0)
+        self.transition_strength = max(float(transition_strength), 0.0)
+        self.transition_decay = float(np.clip(transition_decay, 0.0, 0.999))
+        self.transition_threshold = max(float(transition_threshold), 0.0)
+        self.transition_clip = max(float(transition_clip), 1e-6)
+        self.transition_gain = max(float(transition_gain), 0.0)
+        self.max_order = int(base.max_order)
+        self.vocab_size = int(base.vocab_size)
+        self.loop_activity = np.zeros(self.vocab_size, dtype=np.float32)
+        self.loop_pressure = np.zeros(self.vocab_size, dtype=np.float32)
+        self.loop_prev_output = np.zeros(self.vocab_size, dtype=np.float32)
+        self.loop_transition_pressure = np.zeros((self.vocab_size, self.vocab_size), dtype=np.float32)
+
+    def reset_dynamic_state(self) -> None:
+        if hasattr(self.base, "reset_dynamic_state"):
+            self.base.reset_dynamic_state()
+        self.loop_activity.fill(0.0)
+        self.loop_pressure.fill(0.0)
+        self.loop_prev_output.fill(0.0)
+        self.loop_transition_pressure.fill(0.0)
+
+    def observe_output(self, token: int) -> None:
+        token = int(token)
+        repeat_signal = float(self.loop_activity[token])
+        has_previous = bool(np.any(self.loop_prev_output))
+        previous = int(np.argmax(self.loop_prev_output)) if has_previous else -1
+        self.loop_activity *= self.activity_decay
+        self.loop_pressure *= self.pressure_decay
+        self.loop_transition_pressure *= self.transition_decay
+        self.loop_activity[token] += 1.0
+        self.loop_pressure[token] += self.repeat_gain * (1.0 + repeat_signal)
+        if previous >= 0:
+            transition_repeat = float(self.loop_transition_pressure[previous, token])
+            self.loop_transition_pressure[previous, token] += self.transition_gain * (1.0 + transition_repeat)
+        self.loop_prev_output.fill(0.0)
+        self.loop_prev_output[token] = 1.0
+        np.clip(self.loop_pressure, 0.0, self.clip, out=self.loop_pressure)
+        np.clip(self.loop_transition_pressure, 0.0, self.transition_clip, out=self.loop_transition_pressure)
+
+    def observe_prompt(self, token: int) -> None:
+        if hasattr(self.base, "observe_prompt"):
+            self.base.observe_prompt(token)
+        self.observe_output(token)
+
+    def observe_prediction(self, token: int) -> None:
+        if hasattr(self.base, "observe_prediction"):
+            self.base.observe_prediction(token)
+        self.observe_output(token)
+
+    def observe(self, context: np.ndarray, target: int) -> None:
+        if hasattr(self.base, "observe"):
+            self.base.observe(context, target)
+        self.observe_output(target)
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        pressure = np.maximum(0.0, self.loop_pressure - self.threshold)
+        penalty = self.strength * pressure
+        if self.transition_strength > 0.0 and len(context) > 0:
+            last = int(context[-1])
+            transition_pressure = np.maximum(0.0, self.loop_transition_pressure[last] - self.transition_threshold)
+            penalty = penalty + self.transition_strength * transition_pressure
+        return (self.base.scores(context) - penalty).astype(np.float32)
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        self.base.update(context, target)
+        self.observe_output(target)
+
+    def state_bytes(self) -> int:
+        return int(
+            self.base.state_bytes()
+            + self.loop_activity.nbytes
+            + self.loop_pressure.nbytes
+            + self.loop_prev_output.nbytes
+            + self.loop_transition_pressure.nbytes
+        )
+
+    def active_contexts(self) -> int:
+        return int(self.base.active_contexts())
+
+    def state_config_metadata(self) -> dict[str, Any]:
+        return {
+            "class": self.__class__.__name__,
+            "strength": float(self.strength),
+            "activity_decay": float(self.activity_decay),
+            "pressure_decay": float(self.pressure_decay),
+            "threshold": float(self.threshold),
+            "clip": float(self.clip),
+            "repeat_gain": float(self.repeat_gain),
+            "transition_strength": float(self.transition_strength),
+            "transition_decay": float(self.transition_decay),
+            "transition_threshold": float(self.transition_threshold),
+            "transition_clip": float(self.transition_clip),
+            "transition_gain": float(self.transition_gain),
+        }
+
+
+class SegmentAttractorInhibitionMemory:
+    """
+    Segment-level attractor detector over generated/observed output codes.
+
+    Unlike token-level loop pressure, this keeps a compact decaying state over
+    random output codes and compares it to older segment states.  When the
+    current trajectory revisits an older state, a local inhibitory pressure is
+    applied to the recent output trace.  Codes are derived from seed and model
+    shape, so checkpoints store only dynamic neural state.
+    """
+
+    def __init__(
+        self,
+        base: Any,
+        strength: float,
+        state_dim: int,
+        state_decay: float,
+        trace_decay: float,
+        pressure_decay: float,
+        threshold: float,
+        gain: float,
+        clip: float,
+        slots: int,
+        lag: int,
+        stride: int,
+        gate_mode: str,
+        gate_margin_threshold: float,
+        gate_inhibition_threshold: float,
+        gate_branch_threshold: float,
+        gate_gain: float,
+        seed: int,
+    ) -> None:
+        self.base = base
+        self.strength = max(float(strength), 0.0)
+        self.state_decay = float(np.clip(state_decay, 0.0, 0.999))
+        self.trace_decay = float(np.clip(trace_decay, 0.0, 0.999))
+        self.pressure_decay = float(np.clip(pressure_decay, 0.0, 0.999))
+        self.threshold = float(np.clip(threshold, -1.0, 1.0))
+        self.gain = max(float(gain), 0.0)
+        self.clip = max(float(clip), 1e-6)
+        self.slots = max(int(slots), 1)
+        self.lag = max(int(lag), 0)
+        self.stride = max(int(stride), 1)
+        self.gate_mode = str(gate_mode)
+        if self.gate_mode not in {
+            "none",
+            "margin",
+            "inhibition",
+            "branch",
+            "margin_or_inhibition",
+            "margin_and_inhibition",
+            "either",
+            "both",
+        }:
+            raise ValueError(f"unknown segment attractor gate mode: {self.gate_mode}")
+        self.gate_margin_threshold = max(float(gate_margin_threshold), 0.0)
+        self.gate_inhibition_threshold = max(float(gate_inhibition_threshold), 0.0)
+        self.gate_branch_threshold = float(gate_branch_threshold)
+        self.gate_gain = max(float(gate_gain), 0.0)
+        self.seed_offset = int(seed) + 130092997
+        self.derived_state_names = {"segment_attractor_codes"}
+        self.max_order = int(base.max_order)
+        self.vocab_size = int(base.vocab_size)
+        self.state_dim = max(int(state_dim), 1)
+        rng = np.random.default_rng(self.seed_offset)
+        self.segment_attractor_codes = phase.normalize_rows(
+            rng.normal(0.0, 1.0, (self.vocab_size, self.state_dim)).astype(np.float32)
+        )
+        self.segment_state = np.zeros(self.state_dim, dtype=np.float32)
+        self.segment_slots = np.zeros((self.slots, self.state_dim), dtype=np.float32)
+        self.segment_slot_age = np.zeros(self.slots, dtype=np.int32)
+        self.segment_slot_filled = np.zeros(self.slots, dtype=np.bool_)
+        self.segment_output_trace = np.zeros(self.vocab_size, dtype=np.float32)
+        self.segment_attractor_pressure = np.zeros(1, dtype=np.float32)
+        self.segment_step = np.zeros(1, dtype=np.int32)
+        self.segment_slot_index = np.zeros(1, dtype=np.int32)
+
+    def reset_dynamic_state(self) -> None:
+        if hasattr(self.base, "reset_dynamic_state"):
+            self.base.reset_dynamic_state()
+        self.segment_state.fill(0.0)
+        self.segment_slots.fill(0.0)
+        self.segment_slot_age.fill(0)
+        self.segment_slot_filled.fill(False)
+        self.segment_output_trace.fill(0.0)
+        self.segment_attractor_pressure.fill(0.0)
+        self.segment_step.fill(0)
+        self.segment_slot_index.fill(0)
+
+    def observe_output(self, token: int) -> None:
+        token = int(token)
+        self.segment_slot_age[self.segment_slot_filled] += 1
+        code = self.segment_attractor_codes[token]
+        self.segment_state = phase.normalize_vector(self.state_decay * self.segment_state + code)
+        self.segment_output_trace *= self.trace_decay
+        self.segment_output_trace[token] += 1.0
+
+        valid = self.segment_slot_filled & (self.segment_slot_age >= self.lag)
+        pressure_input = 0.0
+        if np.any(valid):
+            sims = self.segment_slots[valid] @ self.segment_state
+            pressure_input = max(0.0, float(np.max(sims)) - self.threshold)
+        self.segment_attractor_pressure[0] = min(
+            self.clip,
+            self.pressure_decay * float(self.segment_attractor_pressure[0]) + self.gain * pressure_input,
+        )
+
+        self.segment_step[0] += 1
+        if int(self.segment_step[0]) % self.stride == 0:
+            idx = int(self.segment_slot_index[0])
+            self.segment_slots[idx] = self.segment_state
+            self.segment_slot_age[idx] = 0
+            self.segment_slot_filled[idx] = True
+            self.segment_slot_index[0] = (idx + 1) % self.slots
+
+    def find_inhibition_memory(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "inhibition") and hasattr(obj, "activity"):
+                return obj
+            obj = getattr(obj, "base", None)
+        return None
+
+    def inhibition_pressure(self) -> np.ndarray:
+        inhibition_memory = self.find_inhibition_memory()
+        if inhibition_memory is None or not np.any(inhibition_memory.activity):
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        pressure = inhibition_memory.inhibition @ inhibition_memory.activity
+        return pressure.astype(np.float32, copy=False)
+
+    def branch_confidence(self, context: np.ndarray, winner: int) -> float:
+        if not hasattr(self.base, "branch_supports"):
+            return 0.0
+        supports = self.base.branch_supports(context)
+        if supports.ndim != 2 or supports.shape[0] <= 0:
+            return 0.0
+        winner_supports = supports[:, int(winner)].astype(np.float32, copy=False)
+        return float(np.mean(winner_supports) - np.var(winner_supports))
+
+    def event_gate(self, context: np.ndarray, base_scores: np.ndarray) -> float:
+        if self.gate_mode == "none":
+            return 1.0
+        if base_scores.size <= 1:
+            return 0.0
+        top2 = np.partition(base_scores.astype(np.float32), -2)[-2:]
+        margin = float(top2[-1] - top2[-2])
+        winner = int(np.argmax(base_scores))
+        signals: list[float] = []
+        if self.gate_mode in {"margin", "margin_or_inhibition", "margin_and_inhibition", "either", "both"}:
+            denom = max(self.gate_margin_threshold, 1e-6)
+            signals.append(max(0.0, self.gate_margin_threshold - margin) / denom)
+        if self.gate_mode in {"inhibition", "margin_or_inhibition", "margin_and_inhibition", "either", "both"}:
+            pressure = self.inhibition_pressure()
+            signals.append(max(0.0, float(pressure[winner]) - self.gate_inhibition_threshold))
+        if self.gate_mode in {"branch", "either", "both"}:
+            confidence = self.branch_confidence(context, winner)
+            signals.append(max(0.0, self.gate_branch_threshold - confidence))
+        if not signals:
+            return 0.0
+        if self.gate_mode in {"both", "margin_and_inhibition"} and any(value <= 0.0 for value in signals):
+            return 0.0
+        active = max(signals)
+        if active <= 0.0:
+            return 0.0
+        return 1.0 + self.gate_gain * math.tanh(active)
+
+    def observe_prompt(self, token: int) -> None:
+        if hasattr(self.base, "observe_prompt"):
+            self.base.observe_prompt(token)
+        self.observe_output(token)
+
+    def observe_prediction(self, token: int) -> None:
+        if hasattr(self.base, "observe_prediction"):
+            self.base.observe_prediction(token)
+        self.observe_output(token)
+
+    def observe(self, context: np.ndarray, target: int) -> None:
+        if hasattr(self.base, "observe"):
+            self.base.observe(context, target)
+        self.observe_output(target)
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        base_scores = self.base.scores(context).astype(np.float32, copy=False)
+        trace_max = max(float(np.max(self.segment_output_trace)), 1e-6)
+        trace = self.segment_output_trace / trace_max
+        pressure = float(self.segment_attractor_pressure[0])
+        gate = self.event_gate(context, base_scores)
+        penalty = self.strength * pressure * gate * trace
+        return (base_scores - penalty).astype(np.float32)
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        self.base.update(context, target)
+        self.observe_output(target)
+
+    def state_bytes(self) -> int:
+        return int(
+            self.base.state_bytes()
+            + self.segment_state.nbytes
+            + self.segment_slots.nbytes
+            + self.segment_slot_age.nbytes
+            + self.segment_slot_filled.nbytes
+            + self.segment_output_trace.nbytes
+            + self.segment_attractor_pressure.nbytes
+            + self.segment_step.nbytes
+            + self.segment_slot_index.nbytes
+        )
+
+    def active_contexts(self) -> int:
+        return int(self.base.active_contexts())
+
+    def state_config_metadata(self) -> dict[str, Any]:
+        return {
+            "class": self.__class__.__name__,
+            "strength": float(self.strength),
+            "state_dim": int(self.state_dim),
+            "state_decay": float(self.state_decay),
+            "trace_decay": float(self.trace_decay),
+            "pressure_decay": float(self.pressure_decay),
+            "threshold": float(self.threshold),
+            "gain": float(self.gain),
+            "clip": float(self.clip),
+            "slots": int(self.slots),
+            "lag": int(self.lag),
+            "stride": int(self.stride),
+            "gate_mode": self.gate_mode,
+            "gate_margin_threshold": float(self.gate_margin_threshold),
+            "gate_inhibition_threshold": float(self.gate_inhibition_threshold),
+            "gate_branch_threshold": float(self.gate_branch_threshold),
+            "gate_gain": float(self.gate_gain),
+            "seed_offset": int(self.seed_offset),
+            "derived_codes": True,
+        }
+
+
+class LoopEscapeCompetitorMemory:
+    """
+    Learned loop-escape competitor.
+
+    Segment pressure is used only as a trigger.  When the current trajectory is
+    loop-like, a small token-by-branch synaptic matrix adds an escape competitor
+    over dendritic branch supports.  Online updates are local target-vs-wrong
+    WTA corrections; no raw text, replay, token-probability table, or BP signal
+    is stored.
+    """
+
+    def __init__(
+        self,
+        base: Any,
+        strength: float,
+        lr: float,
+        decay: float,
+        clip: float,
+        support_clip: float,
+        top_k: int,
+        margin: float,
+        gate_mode: str,
+        pressure_threshold: float,
+        pressure_gain: float,
+        margin_threshold: float,
+        score_mode: str,
+        score_top_k: int,
+        update_mode: str,
+        learn_candidate_k: int,
+    ) -> None:
+        self.base = base
+        self.strength = max(float(strength), 0.0)
+        self.lr = max(float(lr), 0.0)
+        self.decay = float(np.clip(decay, 0.0, 1.0))
+        self.clip = max(float(clip), 1e-6)
+        self.support_clip = max(float(support_clip), 1e-6)
+        self.top_k = max(int(top_k), 0)
+        self.margin = float(margin)
+        self.gate_mode = str(gate_mode)
+        if self.gate_mode not in {"pressure", "pressure_and_margin", "pressure_or_margin"}:
+            raise ValueError(f"unknown loop escape gate mode: {self.gate_mode}")
+        self.pressure_threshold = max(float(pressure_threshold), 0.0)
+        self.pressure_gain = max(float(pressure_gain), 0.0)
+        self.margin_threshold = max(float(margin_threshold), 0.0)
+        self.score_mode = str(score_mode)
+        if self.score_mode not in {"all", "base_topk", "winner_suppress"}:
+            raise ValueError(f"unknown loop escape score mode: {self.score_mode}")
+        self.score_top_k = max(int(score_top_k), 1)
+        self.update_mode = str(update_mode)
+        if self.update_mode not in {"target_wrong", "wrong_only"}:
+            raise ValueError(f"unknown loop escape update mode: {self.update_mode}")
+        self.learn_candidate_k = max(int(learn_candidate_k), 0)
+        self.max_order = int(base.max_order)
+        self.vocab_size = int(base.vocab_size)
+        branch_model = self.find_branch_model()
+        if branch_model is None:
+            raise ValueError("loop escape competitor requires a wrapped learner with branch_model")
+        self.branch_count = len(branch_model.branches)
+        if self.branch_count <= 0:
+            raise ValueError("loop escape competitor found no branches")
+        self.loop_escape_weights = np.zeros((self.vocab_size, self.branch_count), dtype=np.float32)
+
+    def find_branch_model(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "branch_model"):
+                return obj.branch_model
+            obj = getattr(obj, "base", None)
+        return None
+
+    def find_segment_memory(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "segment_attractor_pressure") and hasattr(obj, "segment_state"):
+                return obj
+            obj = getattr(obj, "base", None)
+        return None
+
+    def branch_supports(self, context: np.ndarray) -> np.ndarray:
+        branch_model = self.find_branch_model()
+        if branch_model is None:
+            return np.zeros((self.branch_count, self.vocab_size), dtype=np.float32)
+        rows: list[np.ndarray] = []
+        for order, branch in zip(branch_model.branch_orders, branch_model.branches):
+            feature = branch.feature(context[-order:])
+            scores = (branch.prototypes @ feature).astype(np.float32)
+            scores = scores - float(np.mean(scores))
+            scale = max(float(np.std(scores)), 1e-6)
+            rows.append(np.clip(scores / scale, -self.support_clip, self.support_clip).astype(np.float32))
+        return np.stack(rows, axis=0).astype(np.float32)
+
+    def escape_signal(self, supports: np.ndarray) -> np.ndarray:
+        return np.einsum("tb,bt->t", self.loop_escape_weights, supports, optimize=True).astype(np.float32)
+
+    def candidate_limited_signal(self, base_scores: np.ndarray, signal: np.ndarray) -> np.ndarray:
+        if self.score_mode == "all":
+            return signal.astype(np.float32, copy=False)
+        limited = np.zeros_like(signal, dtype=np.float32)
+        if self.score_mode == "winner_suppress":
+            winner = int(np.argmax(base_scores))
+            limited[winner] = min(float(signal[winner]), 0.0)
+            return limited
+        k = min(self.score_top_k, signal.size)
+        if k <= 0:
+            return limited
+        candidates = np.argpartition(base_scores.astype(np.float32), -k)[-k:]
+        limited[candidates] = signal[candidates]
+        return limited
+
+    def segment_pressure(self) -> float:
+        segment = self.find_segment_memory()
+        if segment is None:
+            return 0.0
+        return float(segment.segment_attractor_pressure[0])
+
+    def gate_value(self, base_scores: np.ndarray) -> float:
+        pressure_signal = max(0.0, self.segment_pressure() - self.pressure_threshold)
+        margin_signal = 0.0
+        if base_scores.size > 1 and self.margin_threshold > 0.0:
+            top2 = np.partition(base_scores.astype(np.float32), -2)[-2:]
+            margin = float(top2[-1] - top2[-2])
+            margin_signal = max(0.0, self.margin_threshold - margin) / self.margin_threshold
+        if self.gate_mode == "pressure":
+            active = pressure_signal
+        elif self.gate_mode == "pressure_and_margin":
+            if pressure_signal <= 0.0 or margin_signal <= 0.0:
+                return 0.0
+            active = pressure_signal + margin_signal
+        else:
+            active = max(pressure_signal, margin_signal)
+        if active <= 0.0:
+            return 0.0
+        return 1.0 + self.pressure_gain * math.tanh(active)
+
+    def reset_dynamic_state(self) -> None:
+        if hasattr(self.base, "reset_dynamic_state"):
+            self.base.reset_dynamic_state()
+
+    def observe_prompt(self, token: int) -> None:
+        if hasattr(self.base, "observe_prompt"):
+            self.base.observe_prompt(token)
+
+    def observe_prediction(self, token: int) -> None:
+        if hasattr(self.base, "observe_prediction"):
+            self.base.observe_prediction(token)
+
+    def observe(self, context: np.ndarray, target: int) -> None:
+        if hasattr(self.base, "observe"):
+            self.base.observe(context, target)
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        base_scores = self.base.scores(context).astype(np.float32, copy=False)
+        gate = self.gate_value(base_scores)
+        if gate <= 0.0 or self.strength <= 0.0:
+            return base_scores.astype(np.float32)
+        supports = self.branch_supports(context)
+        signal = self.candidate_limited_signal(base_scores, self.escape_signal(supports))
+        return (base_scores + self.strength * gate * signal).astype(np.float32)
+
+    def learn_escape(
+        self,
+        base_scores: np.ndarray,
+        scores: np.ndarray,
+        supports: np.ndarray,
+        target: int,
+        gate: float,
+    ) -> None:
+        if self.decay < 1.0:
+            self.loop_escape_weights *= self.decay
+        if self.lr <= 0.0 or self.top_k <= 0 or gate <= 0.0:
+            return
+        target = int(target)
+        adjusted = scores.astype(np.float32, copy=True)
+        target_score = float(adjusted[target])
+        adjusted[target] = -np.inf
+        if self.learn_candidate_k > 0:
+            candidate_count = min(self.learn_candidate_k, adjusted.size)
+            candidate_mask = np.zeros(adjusted.size, dtype=bool)
+            candidate_idx = np.argpartition(base_scores.astype(np.float32), -candidate_count)[-candidate_count:]
+            candidate_mask[candidate_idx] = True
+            adjusted[~candidate_mask] = -np.inf
+        k = min(self.top_k, self.vocab_size - 1)
+        if k <= 0:
+            return
+        wrongs = np.argpartition(adjusted, -k)[-k:]
+        for wrong in wrongs:
+            wrong = int(wrong)
+            if not np.isfinite(float(adjusted[wrong])):
+                continue
+            if float(adjusted[wrong]) + self.margin <= target_score:
+                continue
+            step = self.lr * gate
+            if self.update_mode == "target_wrong":
+                self.loop_escape_weights[target] = np.clip(
+                    self.loop_escape_weights[target] + step * supports[:, target],
+                    -self.clip,
+                    self.clip,
+                )
+            self.loop_escape_weights[wrong] = np.clip(
+                self.loop_escape_weights[wrong] - (step / k) * supports[:, wrong],
+                -self.clip,
+                self.clip,
+            )
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        base_scores = self.base.scores(context).astype(np.float32, copy=False)
+        gate = self.gate_value(base_scores)
+        supports = self.branch_supports(context)
+        signal = self.candidate_limited_signal(base_scores, self.escape_signal(supports))
+        pre_scores = (base_scores + self.strength * gate * signal).astype(np.float32)
+        self.learn_escape(base_scores, pre_scores, supports, target, gate)
+        self.base.update(context, target)
+
+    def state_bytes(self) -> int:
+        return int(self.base.state_bytes() + self.loop_escape_weights.nbytes)
+
+    def active_contexts(self) -> int:
+        return int(self.base.active_contexts())
+
+    def state_config_metadata(self) -> dict[str, Any]:
+        branch_model = self.find_branch_model()
+        branch_orders = list(getattr(branch_model, "branch_orders", [])) if branch_model is not None else []
+        return {
+            "class": self.__class__.__name__,
+            "strength": float(self.strength),
+            "lr": float(self.lr),
+            "decay": float(self.decay),
+            "clip": float(self.clip),
+            "support_clip": float(self.support_clip),
+            "top_k": int(self.top_k),
+            "margin": float(self.margin),
+            "gate_mode": self.gate_mode,
+            "pressure_threshold": float(self.pressure_threshold),
+            "pressure_gain": float(self.pressure_gain),
+            "margin_threshold": float(self.margin_threshold),
+            "score_mode": self.score_mode,
+            "score_top_k": int(self.score_top_k),
+            "update_mode": self.update_mode,
+            "learn_candidate_k": int(self.learn_candidate_k),
+            "branch_count": int(self.branch_count),
+            "branch_orders": [int(order) for order in branch_orders],
+        }
+
+
+class BranchStateStabilizerMemory:
+    """
+    Representation-level recurrent branch-state stabilizer.
+
+    The wrapper keeps a compact dynamic state in the same feature space as the
+    phase/trace WTA readout.  A local projection maps that state to a feature
+    residual, and scores receive the residual only through the existing readout
+    weights: W @ (P @ state).  This is a pre-readout feature correction rather
+    than direct token suppression or a token-probability table.
+    """
+
+    def __init__(
+        self,
+        base: Any,
+        strength: float,
+        lr: float,
+        state_decay: float,
+        projection_decay: float,
+        clip: float,
+        target_mix: float,
+        gate_mode: str,
+        margin_threshold: float,
+        branch_threshold: float,
+        inhibition_threshold: float,
+        apical_threshold: float,
+        gate_gain: float,
+        top_k: int,
+        support_clip: float,
+        input_mode: str,
+        projection_rank: int,
+        novelty_slots: int,
+        novelty_threshold: float,
+        novelty_strength: float,
+        anti_attractor_strength: float,
+        anti_attractor_threshold: float,
+        anti_attractor_orthogonal: float,
+        anti_score_strength: float,
+        anti_candidate_top_k: int,
+        anti_candidate_center: bool,
+        anti_candidate_agreement_weight: float,
+        anti_prediction_only: bool,
+        seed: int,
+        derived_codes: bool,
+    ) -> None:
+        self.base = base
+        self.strength = max(float(strength), 0.0)
+        self.lr = max(float(lr), 0.0)
+        self.state_decay = float(np.clip(state_decay, 0.0, 0.999))
+        self.projection_decay = float(np.clip(projection_decay, 0.0, 1.0))
+        self.clip = max(float(clip), 1e-6)
+        self.target_mix = max(float(target_mix), 0.0)
+        self.gate_mode = str(gate_mode)
+        if self.gate_mode not in {
+            "none",
+            "margin",
+            "branch",
+            "inhibition",
+            "apical",
+            "any",
+            "all",
+        }:
+            raise ValueError(f"unknown branch-state gate mode: {self.gate_mode}")
+        self.margin_threshold = max(float(margin_threshold), 0.0)
+        self.branch_threshold = max(float(branch_threshold), 0.0)
+        self.inhibition_threshold = max(float(inhibition_threshold), 0.0)
+        self.apical_threshold = max(float(apical_threshold), 0.0)
+        self.gate_gain = max(float(gate_gain), 0.0)
+        self.top_k = max(int(top_k), 0)
+        self.support_clip = max(float(support_clip), 1e-6)
+        self.input_mode = str(input_mode)
+        if self.input_mode not in {"feature", "target", "mixed"}:
+            raise ValueError(f"unknown branch-state input mode: {self.input_mode}")
+        self.projection_rank = max(int(projection_rank), 0)
+        self.novelty_slots = max(int(novelty_slots), 0)
+        self.novelty_threshold = float(np.clip(novelty_threshold, -1.0, 1.0))
+        self.novelty_strength = max(float(novelty_strength), 0.0)
+        self.anti_attractor_strength = max(float(anti_attractor_strength), 0.0)
+        self.anti_attractor_threshold = float(np.clip(anti_attractor_threshold, -1.0, 1.0))
+        self.anti_attractor_orthogonal = max(float(anti_attractor_orthogonal), 0.0)
+        self.anti_score_strength = max(float(anti_score_strength), 0.0)
+        self.anti_candidate_top_k = max(int(anti_candidate_top_k), 0)
+        self.anti_candidate_center = bool(anti_candidate_center)
+        self.anti_candidate_agreement_weight = float(anti_candidate_agreement_weight)
+        self.anti_prediction_only = bool(anti_prediction_only)
+        self.seed_offset = int(seed) + 433494437
+        self.derived_codes = bool(derived_codes)
+        self.derived_state_names: set[str] = set()
+        if self.derived_codes:
+            self.derived_state_names.add("branch_state_codes")
+        self.max_order = int(base.max_order)
+        self.vocab_size = int(base.vocab_size)
+        feature_model = self.find_feature_model()
+        if feature_model is None:
+            raise ValueError("branch-state stabilizer requires a wrapped learner with feature() and weights")
+        self.feature_dim = int(feature_model.weights.shape[1])
+        if self.projection_rank > self.feature_dim:
+            self.projection_rank = self.feature_dim
+        rng = np.random.default_rng(self.seed_offset)
+        self.branch_state_codes = phase.normalize_rows(
+            rng.normal(0.0, 1.0, (self.vocab_size, self.feature_dim)).astype(np.float32)
+        )
+        self.branch_state = np.zeros(self.feature_dim, dtype=np.float32)
+        if self.projection_rank > 0:
+            self.branch_state_encoder = phase.normalize_rows(
+                rng.normal(0.0, 1.0, (self.projection_rank, self.feature_dim)).astype(np.float32)
+            )
+            if self.derived_codes:
+                self.derived_state_names.add("branch_state_encoder")
+            self.branch_state_projection = np.zeros((self.feature_dim, self.projection_rank), dtype=np.float32)
+        else:
+            self.branch_state_encoder = np.eye(self.feature_dim, dtype=np.float32)
+            self.derived_state_names.add("branch_state_encoder")
+            self.branch_state_projection = np.zeros((self.feature_dim, self.feature_dim), dtype=np.float32)
+        self.branch_state_novelty_slots = np.zeros((self.novelty_slots, self.feature_dim), dtype=np.float32)
+        self.branch_state_novelty_filled = np.zeros(self.novelty_slots, dtype=np.bool_)
+        self.branch_state_novelty_index = np.zeros(1, dtype=np.int32)
+        self.branch_state_anti_pressure = np.zeros(1, dtype=np.float32)
+        self.branch_state_anti_vector = np.zeros(self.feature_dim, dtype=np.float32)
+
+    def find_feature_model(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "feature") and hasattr(obj, "weights"):
+                return obj
+            obj = getattr(obj, "base", None)
+        return None
+
+    def find_branch_model(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "branch_model"):
+                return obj.branch_model
+            obj = getattr(obj, "base", None)
+        return None
+
+    def find_branch_agreement_memory(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "agreement_signal") and hasattr(obj, "branch_supports"):
+                return obj
+            obj = getattr(obj, "base", None)
+        return None
+
+    def find_inhibition_memory(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "inhibition") and hasattr(obj, "activity"):
+                return obj
+            obj = getattr(obj, "base", None)
+        return None
+
+    def find_apical_model(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "apical_error_trace"):
+                return obj
+            obj = getattr(obj, "base", None)
+        return None
+
+    def reset_dynamic_state(self) -> None:
+        if hasattr(self.base, "reset_dynamic_state"):
+            self.base.reset_dynamic_state()
+        self.branch_state.fill(0.0)
+        self.branch_state_novelty_slots.fill(0.0)
+        self.branch_state_novelty_filled.fill(False)
+        self.branch_state_novelty_index.fill(0)
+        self.branch_state_anti_pressure.fill(0.0)
+        self.branch_state_anti_vector.fill(0.0)
+
+    def remember_previous_state(self) -> None:
+        if self.novelty_slots <= 0 or not np.any(self.branch_state):
+            return
+        idx = int(self.branch_state_novelty_index[0])
+        self.branch_state_novelty_slots[idx] = self.branch_state
+        self.branch_state_novelty_filled[idx] = True
+        self.branch_state_novelty_index[0] = (idx + 1) % self.novelty_slots
+
+    def anti_attractor_adjustment(self, state: np.ndarray, value: np.ndarray) -> np.ndarray:
+        self.branch_state_anti_pressure[0] = 0.0
+        if self.novelty_slots <= 0 or self.anti_attractor_strength <= 0.0 or not np.any(state):
+            self.branch_state_anti_vector.fill(0.0)
+            return state
+        valid = self.branch_state_novelty_filled
+        if not np.any(valid):
+            self.branch_state_anti_vector.fill(0.0)
+            return state
+        slots = self.branch_state_novelty_slots[valid]
+        sims = slots @ state
+        if sims.size == 0:
+            self.branch_state_anti_vector.fill(0.0)
+            return state
+        excess = np.maximum(0.0, sims - self.anti_attractor_threshold).astype(np.float32)
+        if not np.any(excess):
+            self.branch_state_anti_vector.fill(0.0)
+            return state
+        pressure = min(1.0, float(np.max(excess)) / max(1.0 - self.anti_attractor_threshold, 1e-6))
+        weights = excess / max(float(np.sum(excess)), 1e-6)
+        attractor = phase.normalize_vector((weights @ slots).astype(np.float32))
+        self.branch_state_anti_vector = attractor
+        adjusted = state - self.anti_attractor_strength * pressure * attractor
+        if self.anti_attractor_orthogonal > 0.0 and np.any(value):
+            orthogonal = value - float(value @ attractor) * attractor
+            if np.any(orthogonal):
+                adjusted = adjusted + self.anti_attractor_orthogonal * pressure * phase.normalize_vector(orthogonal)
+        self.branch_state_anti_pressure[0] = pressure
+        if not np.any(adjusted):
+            return state
+        return phase.normalize_vector(adjusted.astype(np.float32))
+
+    def observe_state_vector(self, value: np.ndarray, apply_anti: bool = True) -> None:
+        self.remember_previous_state()
+        raw_state = phase.normalize_vector(
+            self.state_decay * self.branch_state + value.astype(np.float32, copy=False)
+        )
+        if apply_anti:
+            self.branch_state = self.anti_attractor_adjustment(raw_state, value.astype(np.float32, copy=False))
+        else:
+            self.branch_state = raw_state
+            self.branch_state_anti_pressure[0] = 0.0
+            self.branch_state_anti_vector.fill(0.0)
+
+    def state_input(self, context: np.ndarray | None, token: int | None) -> np.ndarray:
+        feature_model = self.find_feature_model()
+        feature = (
+            feature_model.feature(context).astype(np.float32, copy=False)
+            if context is not None and feature_model is not None
+            else np.zeros(self.feature_dim, dtype=np.float32)
+        )
+        token_code = (
+            self.branch_state_codes[int(token)].astype(np.float32, copy=False)
+            if token is not None and 0 <= int(token) < self.vocab_size
+            else np.zeros(self.feature_dim, dtype=np.float32)
+        )
+        if self.input_mode == "feature":
+            value = feature
+        elif self.input_mode == "target":
+            value = token_code
+        else:
+            value = feature + self.target_mix * token_code
+        return phase.normalize_vector(value)
+
+    def observe_output(self, token: int, apply_anti: bool = True) -> None:
+        self.observe_state_vector(self.state_input(None, int(token)), apply_anti=apply_anti)
+
+    def observe_prompt(self, token: int) -> None:
+        if hasattr(self.base, "observe_prompt"):
+            self.base.observe_prompt(token)
+        self.observe_output(int(token), apply_anti=not self.anti_prediction_only)
+
+    def observe_prediction(self, token: int) -> None:
+        if hasattr(self.base, "observe_prediction"):
+            self.base.observe_prediction(token)
+        self.observe_output(int(token), apply_anti=True)
+
+    def observe(self, context: np.ndarray, target: int) -> None:
+        if hasattr(self.base, "observe"):
+            self.base.observe(context, target)
+        self.observe_state_vector(self.state_input(context, int(target)), apply_anti=not self.anti_prediction_only)
+
+    def branch_supports(self, context: np.ndarray) -> np.ndarray:
+        branch_model = self.find_branch_model()
+        if branch_model is None:
+            return np.zeros((1, self.vocab_size), dtype=np.float32)
+        rows: list[np.ndarray] = []
+        for order, branch in zip(branch_model.branch_orders, branch_model.branches):
+            feature = branch.feature(context[-order:])
+            scores = (branch.prototypes @ feature).astype(np.float32)
+            scores = scores - float(np.mean(scores))
+            scale = max(float(np.std(scores)), 1e-6)
+            rows.append(np.clip(scores / scale, -self.support_clip, self.support_clip).astype(np.float32))
+        return np.stack(rows, axis=0).astype(np.float32)
+
+    def branch_disagreement(self, context: np.ndarray, token: int) -> float:
+        supports = self.branch_supports(context)
+        if supports.shape[0] <= 1:
+            return 0.0
+        return float(np.var(supports[:, int(token)]))
+
+    def inhibition_pressure(self, token: int) -> float:
+        inhibition_memory = self.find_inhibition_memory()
+        if inhibition_memory is None or not np.any(inhibition_memory.activity):
+            return 0.0
+        pressure = inhibition_memory.inhibition @ inhibition_memory.activity
+        return float(pressure[int(token)])
+
+    def apical_pressure(self) -> float:
+        apical_model = self.find_apical_model()
+        if apical_model is None:
+            return 0.0
+        trace = apical_model.apical_error_trace
+        return float(np.max(trace)) if trace.size else 0.0
+
+    def gate_signals(self, context: np.ndarray, base_scores: np.ndarray) -> dict[str, float]:
+        pred = int(np.argmax(base_scores))
+        margin_signal = 0.0
+        if base_scores.size > 1 and self.margin_threshold > 0.0:
+            top2 = np.partition(base_scores.astype(np.float32), -2)[-2:]
+            margin = float(top2[-1] - top2[-2])
+            margin_signal = max(0.0, self.margin_threshold - margin) / self.margin_threshold
+        branch_signal = max(0.0, self.branch_disagreement(context, pred) - self.branch_threshold)
+        inhibition_signal = max(0.0, self.inhibition_pressure(pred) - self.inhibition_threshold)
+        apical_signal = max(0.0, self.apical_pressure() - self.apical_threshold)
+        return {
+            "margin": margin_signal,
+            "branch": branch_signal,
+            "inhibition": inhibition_signal,
+            "apical": apical_signal,
+        }
+
+    def gate_value(self, context: np.ndarray, base_scores: np.ndarray) -> float:
+        if self.gate_mode == "none":
+            return 1.0
+        signals = self.gate_signals(context, base_scores)
+        if self.gate_mode in signals:
+            active = signals[self.gate_mode]
+        elif self.gate_mode == "any":
+            active = max(signals.values())
+        else:
+            values = list(signals.values())
+            if any(value <= 0.0 for value in values):
+                return 0.0
+            active = min(values)
+        if active <= 0.0:
+            return 0.0
+        return 1.0 + self.gate_gain * math.tanh(active)
+
+    def novelty_multiplier(self) -> float:
+        if self.novelty_slots <= 0 or self.novelty_strength <= 0.0 or not np.any(self.branch_state):
+            return 1.0
+        valid = self.branch_state_novelty_filled
+        if not np.any(valid):
+            return 1.0
+        sims = self.branch_state_novelty_slots[valid] @ self.branch_state
+        max_sim = float(np.max(sims)) if sims.size else 0.0
+        if max_sim <= self.novelty_threshold:
+            return 1.0
+        denom = max(1.0 - self.novelty_threshold, 1e-6)
+        pressure = min(1.0, (max_sim - self.novelty_threshold) / denom)
+        return max(0.0, 1.0 - self.novelty_strength * pressure)
+
+    def projection_input(self, state: np.ndarray) -> np.ndarray:
+        if self.projection_rank > 0:
+            return (self.branch_state_encoder @ state).astype(np.float32)
+        return state.astype(np.float32, copy=False)
+
+    def residual_scores(self) -> np.ndarray:
+        feature_model = self.find_feature_model()
+        if feature_model is None or not np.any(self.branch_state):
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        residual = self.branch_state_projection @ self.projection_input(self.branch_state)
+        if not np.any(residual):
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        residual = phase.normalize_vector(residual)
+        score_scale = float(getattr(feature_model, "score_scale", 1.0))
+        return (score_scale * (feature_model.weights @ residual)).astype(np.float32)
+
+    def anti_attractor_scores(self, base_scores: np.ndarray | None = None) -> np.ndarray:
+        feature_model = self.find_feature_model()
+        if (
+            feature_model is None
+            or self.anti_score_strength <= 0.0
+            or float(self.branch_state_anti_pressure[0]) <= 0.0
+            or not np.any(self.branch_state_anti_vector)
+        ):
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        anti_feature = phase.normalize_vector(self.branch_state_anti_vector)
+        score_scale = float(getattr(feature_model, "score_scale", 1.0))
+        anti_scores = (score_scale * (feature_model.weights @ anti_feature)).astype(np.float32)
+        if base_scores is None or self.anti_candidate_top_k <= 0 or anti_scores.size <= 1:
+            return anti_scores
+        candidate_count = min(self.anti_candidate_top_k, anti_scores.size - 1)
+        if candidate_count <= 0:
+            return anti_scores
+        candidate_scores = base_scores.astype(np.float32, copy=False)
+        candidates = np.argpartition(candidate_scores, -candidate_count)[-candidate_count:]
+        limited = np.zeros_like(anti_scores)
+        limited[candidates] = anti_scores[candidates]
+        if self.anti_candidate_center and candidates.size > 1:
+            centered = limited[candidates] - float(np.mean(limited[candidates]))
+            limited[candidates] = centered.astype(np.float32, copy=False)
+        return limited.astype(np.float32)
+
+    def candidate_competition_scores(self, context: np.ndarray, base_scores: np.ndarray) -> np.ndarray:
+        if self.anti_candidate_top_k <= 0 or (
+            self.anti_candidate_agreement_weight <= 0.0
+            and float(self.branch_state_anti_pressure[0]) <= 0.0
+        ):
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        candidate_count = min(self.anti_candidate_top_k, base_scores.size - 1)
+        if candidate_count <= 0:
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        candidates = np.argpartition(base_scores.astype(np.float32), -candidate_count)[-candidate_count:]
+        signal = np.zeros(self.vocab_size, dtype=np.float32)
+        supports = self.branch_supports(context)
+        agreement_memory = self.find_branch_agreement_memory()
+        if agreement_memory is not None:
+            agreement_scores = agreement_memory.agreement_signal(supports).astype(np.float32, copy=False)
+        else:
+            agreement_scores = np.mean(supports, axis=0).astype(np.float32)
+        anti_scores = self.anti_attractor_scores(base_scores)
+        local = self.anti_candidate_agreement_weight * agreement_scores[candidates] - anti_scores[candidates]
+        if self.anti_candidate_center and candidates.size > 1:
+            local = local - float(np.mean(local))
+        signal[candidates] = local.astype(np.float32, copy=False)
+        return signal.astype(np.float32)
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        base_scores = self.base.scores(context).astype(np.float32, copy=False)
+        if self.strength <= 0.0 or not np.any(self.branch_state_projection):
+            return base_scores.astype(np.float32)
+        gate = self.gate_value(context, base_scores)
+        if gate <= 0.0:
+            return base_scores.astype(np.float32)
+        novelty = self.novelty_multiplier()
+        if novelty <= 0.0:
+            return base_scores.astype(np.float32)
+        adjusted = base_scores + self.strength * gate * novelty * self.residual_scores()
+        if self.anti_score_strength > 0.0:
+            if self.anti_candidate_top_k > 0:
+                adjusted = adjusted - self.anti_score_strength * float(self.branch_state_anti_pressure[0]) * self.candidate_competition_scores(context, base_scores)
+            else:
+                adjusted = adjusted - self.anti_score_strength * float(self.branch_state_anti_pressure[0]) * self.anti_attractor_scores(base_scores)
+        return adjusted.astype(np.float32)
+
+    def learn_projection(self, context: np.ndarray, target: int, scores: np.ndarray, gate: float) -> None:
+        if self.projection_decay < 1.0:
+            self.branch_state_projection *= self.projection_decay
+        if self.lr <= 0.0 or self.top_k <= 0 or gate <= 0.0:
+            return
+        feature_model = self.find_feature_model()
+        if feature_model is None:
+            return
+        state = self.branch_state
+        if not np.any(state):
+            state = self.state_input(context, int(target))
+        if not np.any(state):
+            return
+        latent = self.projection_input(state)
+        if not np.any(latent):
+            return
+        target = int(target)
+        adjusted = scores.astype(np.float32, copy=True)
+        target_score = float(adjusted[target])
+        adjusted[target] = -np.inf
+        k = min(self.top_k, self.vocab_size - 1)
+        if k <= 0:
+            return
+        wrongs = np.argpartition(adjusted, -k)[-k:]
+        for wrong in wrongs:
+            wrong = int(wrong)
+            if not np.isfinite(float(adjusted[wrong])):
+                continue
+            if float(adjusted[wrong]) <= target_score:
+                continue
+            direction = phase.normalize_vector(feature_model.weights[target] - feature_model.weights[wrong])
+            step = (self.lr * gate) / k
+            self.branch_state_projection += step * np.outer(direction, latent).astype(np.float32)
+        np.clip(self.branch_state_projection, -self.clip, self.clip, out=self.branch_state_projection)
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        base_scores = self.base.scores(context).astype(np.float32, copy=False)
+        gate = self.gate_value(context, base_scores) * self.novelty_multiplier()
+        pre_scores = (
+            base_scores + self.strength * gate * self.residual_scores()
+            if self.strength > 0.0 and gate > 0.0
+            else base_scores
+        ).astype(np.float32)
+        if self.anti_score_strength > 0.0 and float(self.branch_state_anti_pressure[0]) > 0.0:
+            if self.anti_candidate_top_k > 0:
+                pre_scores = (
+                    pre_scores
+                    - self.anti_score_strength
+                    * float(self.branch_state_anti_pressure[0])
+                    * self.candidate_competition_scores(context, base_scores)
+                ).astype(np.float32)
+            else:
+                pre_scores = (
+                    pre_scores
+                    - self.anti_score_strength
+                    * float(self.branch_state_anti_pressure[0])
+                    * self.anti_attractor_scores(base_scores)
+                ).astype(np.float32)
+        self.learn_projection(context, int(target), pre_scores, gate)
+        self.base.update(context, target)
+        self.observe_state_vector(self.state_input(context, int(target)), apply_anti=not self.anti_prediction_only)
+
+    def state_bytes(self) -> int:
+        code_bytes = 0 if self.derived_codes else self.branch_state_codes.nbytes
+        encoder_bytes = 0 if self.derived_codes or self.projection_rank <= 0 else self.branch_state_encoder.nbytes
+        return int(
+            self.base.state_bytes()
+            + code_bytes
+            + encoder_bytes
+            + self.branch_state.nbytes
+            + self.branch_state_projection.nbytes
+            + self.branch_state_novelty_slots.nbytes
+            + self.branch_state_novelty_filled.nbytes
+            + self.branch_state_novelty_index.nbytes
+            + self.branch_state_anti_pressure.nbytes
+            + self.branch_state_anti_vector.nbytes
+        )
+
+    def active_contexts(self) -> int:
+        return int(self.base.active_contexts())
+
+    def state_config_metadata(self) -> dict[str, Any]:
+        feature_model = self.find_feature_model()
+        return {
+            "class": self.__class__.__name__,
+            "strength": float(self.strength),
+            "lr": float(self.lr),
+            "state_decay": float(self.state_decay),
+            "projection_decay": float(self.projection_decay),
+            "clip": float(self.clip),
+            "target_mix": float(self.target_mix),
+            "gate_mode": self.gate_mode,
+            "margin_threshold": float(self.margin_threshold),
+            "branch_threshold": float(self.branch_threshold),
+            "inhibition_threshold": float(self.inhibition_threshold),
+            "apical_threshold": float(self.apical_threshold),
+            "gate_gain": float(self.gate_gain),
+            "top_k": int(self.top_k),
+            "support_clip": float(self.support_clip),
+            "input_mode": self.input_mode,
+            "projection_rank": int(self.projection_rank),
+            "novelty_slots": int(self.novelty_slots),
+            "novelty_threshold": float(self.novelty_threshold),
+            "novelty_strength": float(self.novelty_strength),
+            "anti_attractor_strength": float(self.anti_attractor_strength),
+            "anti_attractor_threshold": float(self.anti_attractor_threshold),
+            "anti_attractor_orthogonal": float(self.anti_attractor_orthogonal),
+            "anti_score_strength": float(self.anti_score_strength),
+            "anti_candidate_top_k": int(self.anti_candidate_top_k),
+            "anti_candidate_center": bool(self.anti_candidate_center),
+            "anti_candidate_agreement_weight": float(self.anti_candidate_agreement_weight),
+            "anti_prediction_only": bool(self.anti_prediction_only),
+            "seed_offset": int(self.seed_offset),
+            "derived_codes": bool(self.derived_codes),
+            "feature_dim": int(self.feature_dim),
+            "projection_shape": list(self.branch_state_projection.shape),
+            "feature_model_class": feature_model.__class__.__name__ if feature_model is not None else "",
+        }
+
+
 class AdaptiveOutputInhibitionMemory:
     """
     Locally plastic inhibition over a recent output trace.
@@ -1354,6 +2519,502 @@ class ReadoutGainMemory:
         }
 
 
+class LocalAdaptiveReadoutGainMemory:
+    """
+    Context-local readout energy gain.
+
+    A fixed random context encoder produces a compact gate.  A scalar synaptic
+    gain trace is learned online from local target-vs-winner feedback: correct
+    WTA decisions increase the local readout energy, mistakes decrease it.
+    This stores no token counts or raw text; it is a checkpointable neural
+    modulation state layered over the existing no-BP learner.
+    """
+
+    def __init__(
+        self,
+        base: Any,
+        base_gain: float,
+        strength: float,
+        lr: float,
+        decay: float,
+        clip: float,
+        min_gain: float,
+        max_gain: float,
+        gate_dim: int,
+        gate_decay: float,
+        gate_threshold: float,
+        correct_margin: float,
+        mistake_margin: float,
+        seed: int,
+        derived_codes: bool,
+    ) -> None:
+        self.base = base
+        self.base_gain = max(float(base_gain), 1e-6)
+        self.strength = max(float(strength), 0.0)
+        self.lr = max(float(lr), 0.0)
+        self.decay = float(np.clip(decay, 0.0, 1.0))
+        self.clip = max(float(clip), 1e-6)
+        self.min_gain = max(float(min_gain), 1e-6)
+        self.max_gain = max(float(max_gain), self.min_gain)
+        self.gate_decay = float(np.clip(gate_decay, 0.0, 0.999))
+        self.gate_threshold = float(gate_threshold)
+        self.correct_margin = float(correct_margin)
+        self.mistake_margin = float(mistake_margin)
+        self.seed_offset = int(seed) + 49979687
+        self.derived_codes = bool(derived_codes)
+        self.derived_state_names = {"gain_codes"} if derived_codes else set()
+        self.max_order = int(base.max_order)
+        self.vocab_size = int(base.vocab_size)
+        self.gate_dim = max(int(gate_dim), 1)
+        self.rng = np.random.default_rng(self.seed_offset)
+        self.gain_codes = phase.normalize_rows(
+            self.rng.normal(0.0, 1.0, (self.max_order, self.vocab_size, self.gate_dim)).astype(np.float32).reshape(
+                self.max_order * self.vocab_size, self.gate_dim
+            )
+        ).reshape(self.max_order, self.vocab_size, self.gate_dim)
+        self.gain_weights = np.zeros(self.gate_dim, dtype=np.float32)
+        self.gain_gate = np.zeros(self.gate_dim, dtype=np.float32)
+
+    def context_gate(self, context: np.ndarray) -> np.ndarray:
+        state = np.zeros(self.gate_dim, dtype=np.float32)
+        clipped = context[-self.max_order :]
+        offset = self.max_order - len(clipped)
+        for pos, token in enumerate(clipped):
+            state += self.gain_codes[offset + pos, int(token)]
+        gate = phase.normalize_vector(state)
+        if self.gate_threshold > 0.0:
+            active = np.abs(gate) >= self.gate_threshold
+            if np.any(active):
+                gate = np.where(active, gate, 0.0).astype(np.float32)
+                gate = phase.normalize_vector(gate)
+        return gate
+
+    def reset_dynamic_state(self) -> None:
+        if hasattr(self.base, "reset_dynamic_state"):
+            self.base.reset_dynamic_state()
+        self.gain_gate.fill(0.0)
+
+    def observe_prompt(self, token: int) -> None:
+        if hasattr(self.base, "observe_prompt"):
+            self.base.observe_prompt(token)
+
+    def observe_prediction(self, token: int) -> None:
+        if hasattr(self.base, "observe_prediction"):
+            self.base.observe_prediction(token)
+
+    def observe(self, context: np.ndarray, target: int) -> None:
+        if hasattr(self.base, "observe"):
+            self.base.observe(context, target)
+        self.observe_gate(context)
+
+    def observe_gate(self, context: np.ndarray) -> np.ndarray:
+        gate = self.context_gate(context)
+        self.gain_gate = phase.normalize_vector(self.gate_decay * self.gain_gate + gate)
+        return self.gain_gate
+
+    def effective_gate(self, context: np.ndarray) -> np.ndarray:
+        gate = self.context_gate(context)
+        if self.gate_decay <= 0.0 or not np.any(self.gain_gate):
+            return gate
+        return phase.normalize_vector(gate + self.gate_decay * self.gain_gate)
+
+    def local_gain(self, gate: np.ndarray) -> float:
+        modulation = float(self.gain_weights @ gate)
+        gain = self.base_gain * (1.0 + self.strength * math.tanh(modulation))
+        return float(np.clip(gain, self.min_gain, self.max_gain))
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        gate = self.effective_gate(context)
+        scores = self.base.scores(context).astype(np.float32, copy=False)
+        return (self.local_gain(gate) * scores).astype(np.float32)
+
+    def learn_gain(self, base_scores: np.ndarray, target: int, gate: np.ndarray) -> None:
+        if self.decay < 1.0:
+            self.gain_weights *= self.decay
+        if self.lr <= 0.0:
+            return
+        target = int(target)
+        adjusted = base_scores.astype(np.float32, copy=True)
+        target_score = float(adjusted[target])
+        adjusted[target] = -np.inf
+        if adjusted.size <= 1:
+            return
+        wrong_score = float(np.max(adjusted))
+        pred = int(np.argmax(base_scores))
+        delta = 0.0
+        if pred == target and target_score - wrong_score >= self.correct_margin:
+            delta = self.lr
+        elif pred != target and wrong_score - target_score >= self.mistake_margin:
+            delta = -self.lr
+        if delta == 0.0:
+            return
+        self.gain_weights = np.clip(self.gain_weights + delta * gate, -self.clip, self.clip).astype(np.float32)
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        gate = self.effective_gate(context)
+        base_scores = self.base.scores(context)
+        self.learn_gain(base_scores, target, gate)
+        self.base.update(context, target)
+        self.observe_gate(context)
+
+    def state_bytes(self) -> int:
+        return int(self.base.state_bytes() + self.gain_codes.nbytes + self.gain_weights.nbytes + self.gain_gate.nbytes)
+
+    def active_contexts(self) -> int:
+        return int(self.base.active_contexts())
+
+    def state_config_metadata(self) -> dict[str, Any]:
+        return {
+            "class": self.__class__.__name__,
+            "base_gain": float(self.base_gain),
+            "strength": float(self.strength),
+            "lr": float(self.lr),
+            "decay": float(self.decay),
+            "clip": float(self.clip),
+            "min_gain": float(self.min_gain),
+            "max_gain": float(self.max_gain),
+            "gate_decay": float(self.gate_decay),
+            "gate_threshold": float(self.gate_threshold),
+            "correct_margin": float(self.correct_margin),
+            "mistake_margin": float(self.mistake_margin),
+            "seed_offset": int(self.seed_offset),
+            "derived_codes": bool(self.derived_codes),
+            "max_order": int(self.max_order),
+            "vocab_size": int(self.vocab_size),
+            "gate_dim": int(self.gate_dim),
+            "gain_codes_shape": list(self.gain_codes.shape),
+        }
+
+
+class BranchAgreementReadoutMemory:
+    """
+    Dendritic branch-agreement readout.
+
+    The wrapper reuses the learned phase branches inside the no-BP learner and
+    adds a token-wise boost only when independent branches support the same
+    output.  Unlike scalar gain, this can change winner ordering.  It stores no
+    token-count table or raw text.
+    """
+
+    def __init__(
+        self,
+        base: Any,
+        strength: float,
+        mode: str,
+        clip: float,
+        threshold: float,
+        variance_penalty: float,
+    ) -> None:
+        self.base = base
+        self.strength = float(strength)
+        self.mode = str(mode)
+        if self.mode not in {"mean_min", "positive_fraction", "low_variance", "min"}:
+            raise ValueError(f"unknown branch agreement mode: {self.mode}")
+        self.clip = max(float(clip), 1e-6)
+        self.threshold = float(threshold)
+        self.variance_penalty = max(float(variance_penalty), 0.0)
+        self.max_order = int(base.max_order)
+        self.vocab_size = int(base.vocab_size)
+        branch_model = self.find_branch_model()
+        if branch_model is None:
+            raise ValueError("branch agreement readout requires a wrapped learner with branch_model")
+        self.branch_count = len(branch_model.branches)
+        if self.branch_count <= 0:
+            raise ValueError("branch agreement readout found no branches")
+
+    def find_branch_model(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "branch_model"):
+                return obj.branch_model
+            obj = getattr(obj, "base", None)
+        return None
+
+    def reset_dynamic_state(self) -> None:
+        if hasattr(self.base, "reset_dynamic_state"):
+            self.base.reset_dynamic_state()
+
+    def observe_prompt(self, token: int) -> None:
+        if hasattr(self.base, "observe_prompt"):
+            self.base.observe_prompt(token)
+
+    def observe_prediction(self, token: int) -> None:
+        if hasattr(self.base, "observe_prediction"):
+            self.base.observe_prediction(token)
+
+    def observe(self, context: np.ndarray, target: int) -> None:
+        if hasattr(self.base, "observe"):
+            self.base.observe(context, target)
+
+    def branch_supports(self, context: np.ndarray) -> np.ndarray:
+        branch_model = self.find_branch_model()
+        if branch_model is None:
+            return np.zeros((1, self.vocab_size), dtype=np.float32)
+        rows: list[np.ndarray] = []
+        for order, branch in zip(branch_model.branch_orders, branch_model.branches):
+            feature = branch.feature(context[-order:])
+            scores = (branch.prototypes @ feature).astype(np.float32)
+            scores = scores - float(np.mean(scores))
+            scale = max(float(np.std(scores)), 1e-6)
+            rows.append(np.clip(scores / scale, -self.clip, self.clip).astype(np.float32))
+        return np.stack(rows, axis=0).astype(np.float32)
+
+    def agreement_signal(self, supports: np.ndarray) -> np.ndarray:
+        if supports.shape[0] <= 1:
+            signal = supports[0]
+        elif self.mode == "min":
+            signal = np.min(supports, axis=0)
+        elif self.mode == "mean_min":
+            signal = 0.5 * (np.mean(supports, axis=0) + np.min(supports, axis=0))
+        elif self.mode == "positive_fraction":
+            signal = np.mean(supports, axis=0) * np.mean(supports > self.threshold, axis=0)
+        else:
+            signal = np.mean(supports, axis=0) - self.variance_penalty * np.var(supports, axis=0)
+        return np.clip(signal, -self.clip, self.clip).astype(np.float32)
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        base_scores = self.base.scores(context).astype(np.float32, copy=False)
+        signal = self.agreement_signal(self.branch_supports(context))
+        return (base_scores + self.strength * signal).astype(np.float32)
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        self.base.update(context, target)
+
+    def state_bytes(self) -> int:
+        return int(self.base.state_bytes())
+
+    def active_contexts(self) -> int:
+        return int(self.base.active_contexts())
+
+    def state_config_metadata(self) -> dict[str, Any]:
+        branch_model = self.find_branch_model()
+        branch_orders = list(getattr(branch_model, "branch_orders", [])) if branch_model is not None else []
+        return {
+            "class": self.__class__.__name__,
+            "strength": float(self.strength),
+            "mode": self.mode,
+            "clip": float(self.clip),
+            "threshold": float(self.threshold),
+            "variance_penalty": float(self.variance_penalty),
+            "branch_count": int(self.branch_count),
+            "branch_orders": [int(order) for order in branch_orders],
+        }
+
+
+class PlasticBranchAgreementReadoutMemory:
+    """
+    Locally plastic branch-agreement correction.
+
+    Each output token owns a small vector over dendritic branches.  On a local
+    WTA error, the target row is moved toward its current branch-support vector
+    and the wrong-winner row is moved away from its support vector.  The score
+    correction is token-wise, so it can alter winner ordering while storing only
+    synaptic state.
+    """
+
+    def __init__(
+        self,
+        base: Any,
+        strength: float,
+        lr: float,
+        decay: float,
+        clip: float,
+        support_clip: float,
+        top_k: int,
+        margin: float,
+        pressure_mode: str,
+        pressure_threshold: float,
+        pressure_gain: float,
+        loop_window: int,
+    ) -> None:
+        self.base = base
+        self.strength = float(strength)
+        self.lr = max(float(lr), 0.0)
+        self.decay = float(np.clip(decay, 0.0, 1.0))
+        self.clip = max(float(clip), 1e-6)
+        self.support_clip = max(float(support_clip), 1e-6)
+        self.top_k = max(int(top_k), 0)
+        self.margin = float(margin)
+        self.pressure_mode = str(pressure_mode)
+        if self.pressure_mode not in {"none", "inhibition", "context_loop", "either", "both"}:
+            raise ValueError(f"unknown plastic branch pressure mode: {self.pressure_mode}")
+        self.pressure_threshold = max(float(pressure_threshold), 0.0)
+        self.pressure_gain = max(float(pressure_gain), 0.0)
+        self.loop_window = max(int(loop_window), 1)
+        self.max_order = int(base.max_order)
+        self.vocab_size = int(base.vocab_size)
+        branch_model = self.find_branch_model()
+        if branch_model is None:
+            raise ValueError("plastic branch agreement requires a wrapped learner with branch_model")
+        self.branch_count = len(branch_model.branches)
+        if self.branch_count <= 0:
+            raise ValueError("plastic branch agreement found no branches")
+        self.plastic_branch_weights = np.zeros((self.vocab_size, self.branch_count), dtype=np.float32)
+
+    def find_branch_model(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "branch_model"):
+                return obj.branch_model
+            obj = getattr(obj, "base", None)
+        return None
+
+    def find_inhibition_memory(self) -> Any | None:
+        obj = self.base
+        seen: set[int] = set()
+        while obj is not None and id(obj) not in seen:
+            seen.add(id(obj))
+            if hasattr(obj, "inhibition") and hasattr(obj, "activity"):
+                return obj
+            obj = getattr(obj, "base", None)
+        return None
+
+    def reset_dynamic_state(self) -> None:
+        if hasattr(self.base, "reset_dynamic_state"):
+            self.base.reset_dynamic_state()
+
+    def observe_prompt(self, token: int) -> None:
+        if hasattr(self.base, "observe_prompt"):
+            self.base.observe_prompt(token)
+
+    def observe_prediction(self, token: int) -> None:
+        if hasattr(self.base, "observe_prediction"):
+            self.base.observe_prediction(token)
+
+    def observe(self, context: np.ndarray, target: int) -> None:
+        if hasattr(self.base, "observe"):
+            self.base.observe(context, target)
+
+    def branch_supports(self, context: np.ndarray) -> np.ndarray:
+        branch_model = self.find_branch_model()
+        if branch_model is None:
+            return np.zeros((self.branch_count, self.vocab_size), dtype=np.float32)
+        rows: list[np.ndarray] = []
+        for order, branch in zip(branch_model.branch_orders, branch_model.branches):
+            feature = branch.feature(context[-order:])
+            scores = (branch.prototypes @ feature).astype(np.float32)
+            scores = scores - float(np.mean(scores))
+            scale = max(float(np.std(scores)), 1e-6)
+            rows.append(np.clip(scores / scale, -self.support_clip, self.support_clip).astype(np.float32))
+        return np.stack(rows, axis=0).astype(np.float32)
+
+    def plastic_signal(self, supports: np.ndarray) -> np.ndarray:
+        return np.einsum("tb,bt->t", self.plastic_branch_weights, supports, optimize=True).astype(np.float32)
+
+    def inhibition_pressure(self) -> np.ndarray:
+        inhibition_memory = self.find_inhibition_memory()
+        if inhibition_memory is None or not np.any(inhibition_memory.activity):
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        pressure = inhibition_memory.inhibition @ inhibition_memory.activity
+        return pressure.astype(np.float32, copy=False)
+
+    def context_loop_pressure(self, context: np.ndarray) -> float:
+        window = [int(token) for token in context[-self.loop_window :]]
+        if len(window) <= 1:
+            return 0.0
+        counts: dict[int, int] = {}
+        for token in window:
+            counts[token] = counts.get(token, 0) + 1
+        max_fraction = max(counts.values()) / len(window)
+        repeated_adjacent = sum(int(window[idx] == window[idx - 1]) for idx in range(1, len(window)))
+        adjacent_fraction = repeated_adjacent / max(len(window) - 1, 1)
+        return float(max(max_fraction, adjacent_fraction))
+
+    def pressure_gate(self, wrong: int, context: np.ndarray, pressure: np.ndarray) -> float:
+        if self.pressure_mode == "none":
+            return 1.0
+        active: list[float] = []
+        if self.pressure_mode in {"inhibition", "either", "both"}:
+            inhibition_value = float(pressure[int(wrong)])
+            if inhibition_value >= self.pressure_threshold:
+                active.append(inhibition_value)
+        if self.pressure_mode in {"context_loop", "either", "both"}:
+            loop_value = self.context_loop_pressure(context)
+            if loop_value >= self.pressure_threshold:
+                active.append(loop_value)
+        if self.pressure_mode == "both" and len(active) < 2:
+            return 0.0
+        if self.pressure_mode in {"inhibition", "context_loop"} and not active:
+            return 0.0
+        if self.pressure_mode == "either" and not active:
+            return 0.0
+        return 1.0 + self.pressure_gain * math.tanh(max(active) - self.pressure_threshold)
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        base_scores = self.base.scores(context).astype(np.float32, copy=False)
+        supports = self.branch_supports(context)
+        return (base_scores + self.strength * self.plastic_signal(supports)).astype(np.float32)
+
+    def learn_plastic(self, scores: np.ndarray, supports: np.ndarray, target: int, context: np.ndarray) -> None:
+        if self.decay < 1.0:
+            self.plastic_branch_weights *= self.decay
+        if self.lr <= 0.0 or self.top_k <= 0:
+            return
+        target = int(target)
+        adjusted = scores.astype(np.float32, copy=True)
+        target_score = float(adjusted[target])
+        adjusted[target] = -np.inf
+        k = min(self.top_k, self.vocab_size - 1)
+        if k <= 0:
+            return
+        wrongs = np.argpartition(adjusted, -k)[-k:]
+        pressure = self.inhibition_pressure()
+        for wrong in wrongs:
+            wrong = int(wrong)
+            if float(adjusted[wrong]) + self.margin <= target_score:
+                continue
+            gate = self.pressure_gate(wrong, context, pressure)
+            if gate <= 0.0:
+                continue
+            step = self.lr * gate
+            self.plastic_branch_weights[target] = np.clip(
+                self.plastic_branch_weights[target] + step * supports[:, target],
+                -self.clip,
+                self.clip,
+            )
+            self.plastic_branch_weights[wrong] = np.clip(
+                self.plastic_branch_weights[wrong] - (step / k) * supports[:, wrong],
+                -self.clip,
+                self.clip,
+            )
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        supports = self.branch_supports(context)
+        pre_scores = (self.base.scores(context) + self.strength * self.plastic_signal(supports)).astype(np.float32)
+        self.learn_plastic(pre_scores, supports, target, context)
+        self.base.update(context, target)
+
+    def state_bytes(self) -> int:
+        return int(self.base.state_bytes() + self.plastic_branch_weights.nbytes)
+
+    def active_contexts(self) -> int:
+        return int(self.base.active_contexts())
+
+    def state_config_metadata(self) -> dict[str, Any]:
+        branch_model = self.find_branch_model()
+        branch_orders = list(getattr(branch_model, "branch_orders", [])) if branch_model is not None else []
+        return {
+            "class": self.__class__.__name__,
+            "strength": float(self.strength),
+            "lr": float(self.lr),
+            "decay": float(self.decay),
+            "clip": float(self.clip),
+            "support_clip": float(self.support_clip),
+            "top_k": int(self.top_k),
+            "margin": float(self.margin),
+            "pressure_mode": self.pressure_mode,
+            "pressure_threshold": float(self.pressure_threshold),
+            "pressure_gain": float(self.pressure_gain),
+            "loop_window": int(self.loop_window),
+            "branch_count": int(self.branch_count),
+            "branch_orders": [int(order) for order in branch_orders],
+        }
+
+
 class LowPrecisionStateWrapper:
     """
     Post-update low-precision projection for hardware-oriented audits.
@@ -1393,6 +3054,9 @@ class LowPrecisionStateWrapper:
             "apical_feedback",
             "apical_fixed_gate",
             "calibration_codes",
+            "gain_codes",
+            "branch_state_codes",
+            "branch_state_encoder",
         },
         "dynamic": {
             "activity",
@@ -1403,6 +3067,29 @@ class LowPrecisionStateWrapper:
             "excitability",
             "calibration",
             "calibration_gate",
+            "gain_weights",
+            "gain_gate",
+            "plastic_branch_weights",
+            "loop_activity",
+            "loop_pressure",
+            "loop_prev_output",
+            "loop_transition_pressure",
+            "segment_state",
+            "segment_slots",
+            "segment_slot_age",
+            "segment_slot_filled",
+            "segment_output_trace",
+            "segment_attractor_pressure",
+            "segment_step",
+            "segment_slot_index",
+            "loop_escape_weights",
+            "branch_state",
+            "branch_state_projection",
+            "branch_state_novelty_slots",
+            "branch_state_novelty_filled",
+            "branch_state_novelty_index",
+            "branch_state_anti_pressure",
+            "branch_state_anti_vector",
         },
     }
 
@@ -2141,6 +3828,42 @@ def max_token_fraction(tokens: Sequence[int]) -> float:
     return max(counts.values()) / len(tokens)
 
 
+def max_run_fraction(tokens: Sequence[int]) -> float:
+    if not tokens:
+        return 0.0
+    best = 1
+    current = 1
+    previous = int(tokens[0])
+    for token in tokens[1:]:
+        token = int(token)
+        if token == previous:
+            current += 1
+        else:
+            best = max(best, current)
+            current = 1
+            previous = token
+    best = max(best, current)
+    return best / len(tokens)
+
+
+def loop_pressure_stats(tokens: Sequence[int], window: int = 8) -> tuple[float, float]:
+    if len(tokens) < 2:
+        return 0.0, 0.0
+    window = max(int(window), 1)
+    pressures: list[float] = []
+    values = [int(token) for token in tokens]
+    for end in range(2, len(values) + 1):
+        recent = values[max(0, end - window) : end]
+        counts: dict[int, int] = {}
+        for token in recent:
+            counts[token] = counts.get(token, 0) + 1
+        max_fraction = max(counts.values()) / len(recent)
+        adjacent = sum(int(recent[idx] == recent[idx - 1]) for idx in range(1, len(recent)))
+        adjacent_fraction = adjacent / max(len(recent) - 1, 1)
+        pressures.append(max(max_fraction, adjacent_fraction))
+    return float(np.mean(pressures)), float(np.max(pressures))
+
+
 def prefix_match_tokens(generated: Sequence[int], reference: Sequence[int]) -> int:
     matched = 0
     for pred, target in zip(generated, reference):
@@ -2176,6 +3899,7 @@ def build_generation_rows(
         )
         distinct_1, repeat_1 = ngram_stats(generated_ids, 1)
         distinct_2, repeat_2 = ngram_stats(generated_ids, 2)
+        loop_pressure_mean, loop_pressure_max = loop_pressure_stats(generated_ids)
         prefix_match = prefix_match_tokens(generated_ids, reference_ids)
         rows.append(
             {
@@ -2195,6 +3919,9 @@ def build_generation_rows(
                 "distinct_2": distinct_2,
                 "repeat_2": repeat_2,
                 "max_token_fraction": max_token_fraction(generated_ids),
+                "max_run_fraction": max_run_fraction(generated_ids),
+                "loop_pressure_mean": loop_pressure_mean,
+                "loop_pressure_max": loop_pressure_max,
                 "repetition_penalty": repetition_penalty,
                 "no_repeat_ngram": no_repeat_ngram,
                 "model_stores_raw_text": False,
@@ -2221,6 +3948,9 @@ def summarize_generation_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]
         "repeat_1",
         "repeat_2",
         "max_token_fraction",
+        "max_run_fraction",
+        "loop_pressure_mean",
+        "loop_pressure_max",
     ]
     for (method, stage, decode_mode), group in sorted(groups.items()):
         summary: dict[str, Any] = {
@@ -2364,6 +4094,145 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--readout-gain-margin-scale", type=float, default=1.0)
     parser.add_argument("--readout-gain-min", type=float, default=0.5)
     parser.add_argument("--readout-gain-max", type=float, default=3.0)
+    parser.add_argument("--local-readout-gain", action="store_true")
+    parser.add_argument("--local-readout-base-gain", type=float, default=1.4285714286)
+    parser.add_argument("--local-readout-gain-strength", type=float, default=0.35)
+    parser.add_argument("--local-readout-gain-lr", type=float, default=0.01)
+    parser.add_argument("--local-readout-gain-decay", type=float, default=1.0)
+    parser.add_argument("--local-readout-gain-clip", type=float, default=2.0)
+    parser.add_argument("--local-readout-gain-min", type=float, default=0.7)
+    parser.add_argument("--local-readout-gain-max", type=float, default=2.0)
+    parser.add_argument("--local-readout-gain-dim", type=int, default=32)
+    parser.add_argument("--local-readout-gain-gate-decay", type=float, default=0.50)
+    parser.add_argument("--local-readout-gain-threshold", type=float, default=0.0)
+    parser.add_argument("--local-readout-gain-correct-margin", type=float, default=0.0)
+    parser.add_argument("--local-readout-gain-mistake-margin", type=float, default=0.0)
+    parser.add_argument("--local-readout-gain-derived-codes", action="store_true")
+    parser.add_argument("--branch-state-stabilizer", action="store_true")
+    parser.add_argument("--branch-state-strength", type=float, default=0.10)
+    parser.add_argument("--branch-state-lr", type=float, default=0.001)
+    parser.add_argument("--branch-state-decay", type=float, default=0.85)
+    parser.add_argument("--branch-state-projection-decay", type=float, default=1.0)
+    parser.add_argument("--branch-state-clip", type=float, default=0.75)
+    parser.add_argument("--branch-state-target-mix", type=float, default=0.25)
+    parser.add_argument(
+        "--branch-state-gate-mode",
+        choices=["none", "margin", "branch", "inhibition", "apical", "any", "all"],
+        default="any",
+    )
+    parser.add_argument("--branch-state-margin-threshold", type=float, default=0.35)
+    parser.add_argument("--branch-state-branch-threshold", type=float, default=0.05)
+    parser.add_argument("--branch-state-inhibition-threshold", type=float, default=0.02)
+    parser.add_argument("--branch-state-apical-threshold", type=float, default=0.0)
+    parser.add_argument("--branch-state-gate-gain", type=float, default=1.0)
+    parser.add_argument("--branch-state-top-k", type=int, default=1)
+    parser.add_argument("--branch-state-support-clip", type=float, default=3.0)
+    parser.add_argument("--branch-state-input-mode", choices=["feature", "target", "mixed"], default="mixed")
+    parser.add_argument("--branch-state-projection-rank", type=int, default=0)
+    parser.add_argument("--branch-state-novelty-slots", type=int, default=0)
+    parser.add_argument("--branch-state-novelty-threshold", type=float, default=0.92)
+    parser.add_argument("--branch-state-novelty-strength", type=float, default=0.75)
+    parser.add_argument("--branch-state-anti-strength", type=float, default=0.0)
+    parser.add_argument("--branch-state-anti-threshold", type=float, default=0.80)
+    parser.add_argument("--branch-state-anti-orthogonal", type=float, default=0.0)
+    parser.add_argument("--branch-state-anti-score-strength", type=float, default=0.0)
+    parser.add_argument("--branch-state-anti-candidate-top-k", type=int, default=0)
+    parser.add_argument("--branch-state-anti-candidate-center", action="store_true")
+    parser.add_argument("--branch-state-anti-candidate-agreement-weight", type=float, default=0.0)
+    parser.add_argument("--branch-state-anti-prediction-only", action="store_true")
+    parser.add_argument("--branch-state-derived-codes", action="store_true")
+    parser.add_argument("--branch-agreement-readout", action="store_true")
+    parser.add_argument("--branch-agreement-strength", type=float, default=0.1)
+    parser.add_argument("--branch-agreement-mode", choices=["mean_min", "positive_fraction", "low_variance", "min"], default="mean_min")
+    parser.add_argument("--branch-agreement-clip", type=float, default=3.0)
+    parser.add_argument("--branch-agreement-threshold", type=float, default=0.0)
+    parser.add_argument("--branch-agreement-variance-penalty", type=float, default=0.25)
+    parser.add_argument("--plastic-branch-agreement", action="store_true")
+    parser.add_argument("--plastic-branch-agreement-strength", type=float, default=0.05)
+    parser.add_argument("--plastic-branch-agreement-lr", type=float, default=0.005)
+    parser.add_argument("--plastic-branch-agreement-decay", type=float, default=1.0)
+    parser.add_argument("--plastic-branch-agreement-clip", type=float, default=1.5)
+    parser.add_argument("--plastic-branch-agreement-support-clip", type=float, default=3.0)
+    parser.add_argument("--plastic-branch-agreement-top-k", type=int, default=1)
+    parser.add_argument("--plastic-branch-agreement-margin", type=float, default=0.0)
+    parser.add_argument(
+        "--plastic-branch-agreement-pressure-mode",
+        choices=["none", "inhibition", "context_loop", "either", "both"],
+        default="none",
+    )
+    parser.add_argument("--plastic-branch-agreement-pressure-threshold", type=float, default=0.0)
+    parser.add_argument("--plastic-branch-agreement-pressure-gain", type=float, default=0.0)
+    parser.add_argument("--plastic-branch-agreement-loop-window", type=int, default=8)
+    parser.add_argument("--loop-inhibition", action="store_true")
+    parser.add_argument("--loop-inhibit-strength", type=float, default=0.15)
+    parser.add_argument("--loop-inhibit-activity-decay", type=float, default=0.85)
+    parser.add_argument("--loop-inhibit-pressure-decay", type=float, default=0.80)
+    parser.add_argument("--loop-inhibit-threshold", type=float, default=0.5)
+    parser.add_argument("--loop-inhibit-clip", type=float, default=4.0)
+    parser.add_argument("--loop-inhibit-repeat-gain", type=float, default=1.0)
+    parser.add_argument("--loop-inhibit-transition-strength", type=float, default=0.0)
+    parser.add_argument("--loop-inhibit-transition-decay", type=float, default=0.80)
+    parser.add_argument("--loop-inhibit-transition-threshold", type=float, default=0.5)
+    parser.add_argument("--loop-inhibit-transition-clip", type=float, default=4.0)
+    parser.add_argument("--loop-inhibit-transition-gain", type=float, default=1.0)
+    parser.add_argument("--segment-attractor-inhibition", action="store_true")
+    parser.add_argument("--segment-attractor-strength", type=float, default=0.75)
+    parser.add_argument("--segment-attractor-dim", type=int, default=32)
+    parser.add_argument("--segment-attractor-state-decay", type=float, default=0.90)
+    parser.add_argument("--segment-attractor-trace-decay", type=float, default=0.85)
+    parser.add_argument("--segment-attractor-pressure-decay", type=float, default=0.85)
+    parser.add_argument("--segment-attractor-threshold", type=float, default=0.80)
+    parser.add_argument("--segment-attractor-gain", type=float, default=1.0)
+    parser.add_argument("--segment-attractor-clip", type=float, default=4.0)
+    parser.add_argument("--segment-attractor-slots", type=int, default=16)
+    parser.add_argument("--segment-attractor-lag", type=int, default=4)
+    parser.add_argument("--segment-attractor-stride", type=int, default=2)
+    parser.add_argument(
+        "--segment-attractor-gate-mode",
+        choices=[
+            "none",
+            "margin",
+            "inhibition",
+            "branch",
+            "margin_or_inhibition",
+            "margin_and_inhibition",
+            "either",
+            "both",
+        ],
+        default="none",
+    )
+    parser.add_argument("--segment-attractor-gate-margin-threshold", type=float, default=0.35)
+    parser.add_argument("--segment-attractor-gate-inhibition-threshold", type=float, default=0.05)
+    parser.add_argument("--segment-attractor-gate-branch-threshold", type=float, default=0.0)
+    parser.add_argument("--segment-attractor-gate-gain", type=float, default=1.0)
+    parser.add_argument("--loop-escape", action="store_true")
+    parser.add_argument("--loop-escape-strength", type=float, default=0.75)
+    parser.add_argument("--loop-escape-lr", type=float, default=0.005)
+    parser.add_argument("--loop-escape-decay", type=float, default=1.0)
+    parser.add_argument("--loop-escape-clip", type=float, default=1.5)
+    parser.add_argument("--loop-escape-support-clip", type=float, default=3.0)
+    parser.add_argument("--loop-escape-top-k", type=int, default=1)
+    parser.add_argument("--loop-escape-margin", type=float, default=0.0)
+    parser.add_argument(
+        "--loop-escape-gate-mode",
+        choices=["pressure", "pressure_and_margin", "pressure_or_margin"],
+        default="pressure_and_margin",
+    )
+    parser.add_argument("--loop-escape-pressure-threshold", type=float, default=0.20)
+    parser.add_argument("--loop-escape-pressure-gain", type=float, default=1.0)
+    parser.add_argument("--loop-escape-margin-threshold", type=float, default=0.35)
+    parser.add_argument(
+        "--loop-escape-score-mode",
+        choices=["all", "base_topk", "winner_suppress"],
+        default="all",
+    )
+    parser.add_argument("--loop-escape-score-top-k", type=int, default=8)
+    parser.add_argument(
+        "--loop-escape-update-mode",
+        choices=["target_wrong", "wrong_only"],
+        default="target_wrong",
+    )
+    parser.add_argument("--loop-escape-learn-candidate-k", type=int, default=0)
     parser.add_argument("--sparse-alpha", type=float, default=0.10)
     parser.add_argument("--completion-count", type=int, default=3)
     parser.add_argument("--prompt-tokens", type=int, default=16)
@@ -2380,6 +4249,8 @@ def main() -> None:
         raise ValueError("--branch-orders and --branch-weights must have the same length")
     if args.output_homeostasis and args.feature_calibration:
         raise ValueError("--output-homeostasis and --feature-calibration are alternative calibration wrappers")
+    if args.loop_escape and not args.segment_attractor_inhibition:
+        raise ValueError("--loop-escape requires --segment-attractor-inhibition")
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     tokenizer = AutoTokenizer.from_pretrained(str(args.tokenizer), local_files_only=True)
@@ -2461,6 +4332,143 @@ def main() -> None:
             margin_scale=args.readout_gain_margin_scale,
             min_gain=args.readout_gain_min,
             max_gain=args.readout_gain_max,
+        )
+
+    def local_readout_gain_wrap(base: Any) -> LocalAdaptiveReadoutGainMemory:
+        return LocalAdaptiveReadoutGainMemory(
+            base,
+            base_gain=args.local_readout_base_gain,
+            strength=args.local_readout_gain_strength,
+            lr=args.local_readout_gain_lr,
+            decay=args.local_readout_gain_decay,
+            clip=args.local_readout_gain_clip,
+            min_gain=args.local_readout_gain_min,
+            max_gain=args.local_readout_gain_max,
+            gate_dim=args.local_readout_gain_dim,
+            gate_decay=args.local_readout_gain_gate_decay,
+            gate_threshold=args.local_readout_gain_threshold,
+            correct_margin=args.local_readout_gain_correct_margin,
+            mistake_margin=args.local_readout_gain_mistake_margin,
+            seed=args.seed,
+            derived_codes=args.local_readout_gain_derived_codes,
+        )
+
+    def branch_agreement_wrap(base: Any) -> BranchAgreementReadoutMemory:
+        return BranchAgreementReadoutMemory(
+            base,
+            strength=args.branch_agreement_strength,
+            mode=args.branch_agreement_mode,
+            clip=args.branch_agreement_clip,
+            threshold=args.branch_agreement_threshold,
+            variance_penalty=args.branch_agreement_variance_penalty,
+        )
+
+    def plastic_branch_agreement_wrap(base: Any) -> PlasticBranchAgreementReadoutMemory:
+        return PlasticBranchAgreementReadoutMemory(
+            base,
+            strength=args.plastic_branch_agreement_strength,
+            lr=args.plastic_branch_agreement_lr,
+            decay=args.plastic_branch_agreement_decay,
+            clip=args.plastic_branch_agreement_clip,
+            support_clip=args.plastic_branch_agreement_support_clip,
+            top_k=args.plastic_branch_agreement_top_k,
+            margin=args.plastic_branch_agreement_margin,
+            pressure_mode=args.plastic_branch_agreement_pressure_mode,
+            pressure_threshold=args.plastic_branch_agreement_pressure_threshold,
+            pressure_gain=args.plastic_branch_agreement_pressure_gain,
+            loop_window=args.plastic_branch_agreement_loop_window,
+        )
+
+    def loop_inhibition_wrap(base: Any) -> LoopPressureInhibitionMemory:
+        return LoopPressureInhibitionMemory(
+            base,
+            strength=args.loop_inhibit_strength,
+            activity_decay=args.loop_inhibit_activity_decay,
+            pressure_decay=args.loop_inhibit_pressure_decay,
+            threshold=args.loop_inhibit_threshold,
+            clip=args.loop_inhibit_clip,
+            repeat_gain=args.loop_inhibit_repeat_gain,
+            transition_strength=args.loop_inhibit_transition_strength,
+            transition_decay=args.loop_inhibit_transition_decay,
+            transition_threshold=args.loop_inhibit_transition_threshold,
+            transition_clip=args.loop_inhibit_transition_clip,
+            transition_gain=args.loop_inhibit_transition_gain,
+        )
+
+    def segment_attractor_wrap(base: Any) -> SegmentAttractorInhibitionMemory:
+        return SegmentAttractorInhibitionMemory(
+            base,
+            strength=args.segment_attractor_strength,
+            state_dim=args.segment_attractor_dim,
+            state_decay=args.segment_attractor_state_decay,
+            trace_decay=args.segment_attractor_trace_decay,
+            pressure_decay=args.segment_attractor_pressure_decay,
+            threshold=args.segment_attractor_threshold,
+            gain=args.segment_attractor_gain,
+            clip=args.segment_attractor_clip,
+            slots=args.segment_attractor_slots,
+            lag=args.segment_attractor_lag,
+            stride=args.segment_attractor_stride,
+            gate_mode=args.segment_attractor_gate_mode,
+            gate_margin_threshold=args.segment_attractor_gate_margin_threshold,
+            gate_inhibition_threshold=args.segment_attractor_gate_inhibition_threshold,
+            gate_branch_threshold=args.segment_attractor_gate_branch_threshold,
+            gate_gain=args.segment_attractor_gate_gain,
+            seed=args.seed,
+        )
+
+    def loop_escape_wrap(base: Any) -> LoopEscapeCompetitorMemory:
+        return LoopEscapeCompetitorMemory(
+            base,
+            strength=args.loop_escape_strength,
+            lr=args.loop_escape_lr,
+            decay=args.loop_escape_decay,
+            clip=args.loop_escape_clip,
+            support_clip=args.loop_escape_support_clip,
+            top_k=args.loop_escape_top_k,
+            margin=args.loop_escape_margin,
+            gate_mode=args.loop_escape_gate_mode,
+            pressure_threshold=args.loop_escape_pressure_threshold,
+            pressure_gain=args.loop_escape_pressure_gain,
+            margin_threshold=args.loop_escape_margin_threshold,
+            score_mode=args.loop_escape_score_mode,
+            score_top_k=args.loop_escape_score_top_k,
+            update_mode=args.loop_escape_update_mode,
+            learn_candidate_k=args.loop_escape_learn_candidate_k,
+        )
+
+    def branch_state_wrap(base: Any) -> BranchStateStabilizerMemory:
+        return BranchStateStabilizerMemory(
+            base,
+            strength=args.branch_state_strength,
+            lr=args.branch_state_lr,
+            state_decay=args.branch_state_decay,
+            projection_decay=args.branch_state_projection_decay,
+            clip=args.branch_state_clip,
+            target_mix=args.branch_state_target_mix,
+            gate_mode=args.branch_state_gate_mode,
+            margin_threshold=args.branch_state_margin_threshold,
+            branch_threshold=args.branch_state_branch_threshold,
+            inhibition_threshold=args.branch_state_inhibition_threshold,
+            apical_threshold=args.branch_state_apical_threshold,
+            gate_gain=args.branch_state_gate_gain,
+            top_k=args.branch_state_top_k,
+            support_clip=args.branch_state_support_clip,
+            input_mode=args.branch_state_input_mode,
+            projection_rank=args.branch_state_projection_rank,
+            novelty_slots=args.branch_state_novelty_slots,
+            novelty_threshold=args.branch_state_novelty_threshold,
+            novelty_strength=args.branch_state_novelty_strength,
+            anti_attractor_strength=args.branch_state_anti_strength,
+            anti_attractor_threshold=args.branch_state_anti_threshold,
+            anti_attractor_orthogonal=args.branch_state_anti_orthogonal,
+            anti_score_strength=args.branch_state_anti_score_strength,
+            anti_candidate_top_k=args.branch_state_anti_candidate_top_k,
+            anti_candidate_center=args.branch_state_anti_candidate_center,
+            anti_candidate_agreement_weight=args.branch_state_anti_candidate_agreement_weight,
+            anti_prediction_only=args.branch_state_anti_prediction_only,
+            seed=args.seed,
+            derived_codes=args.branch_state_derived_codes,
         )
 
     builders = {
@@ -3144,6 +5152,55 @@ def main() -> None:
         builders = {
             (name if name == "sparse_context_aux" else f"{name}_gain"): (
                 builder if name == "sparse_context_aux" else (lambda builder=builder: readout_gain_wrap(builder()))
+            )
+            for name, builder in builders.items()
+        }
+    if args.local_readout_gain:
+        builders = {
+            (name if name == "sparse_context_aux" else f"{name}_local_gain"): (
+                builder if name == "sparse_context_aux" else (lambda builder=builder: local_readout_gain_wrap(builder()))
+            )
+            for name, builder in builders.items()
+        }
+    if args.branch_agreement_readout:
+        builders = {
+            (name if name == "sparse_context_aux" else f"{name}_branch_agree"): (
+                builder if name == "sparse_context_aux" else (lambda builder=builder: branch_agreement_wrap(builder()))
+            )
+            for name, builder in builders.items()
+        }
+    if args.plastic_branch_agreement:
+        builders = {
+            (name if name == "sparse_context_aux" else f"{name}_plastic_branch_agree"): (
+                builder if name == "sparse_context_aux" else (lambda builder=builder: plastic_branch_agreement_wrap(builder()))
+            )
+            for name, builder in builders.items()
+        }
+    if args.branch_state_stabilizer:
+        builders = {
+            (name if name == "sparse_context_aux" else f"{name}_branch_state"): (
+                builder if name == "sparse_context_aux" else (lambda builder=builder: branch_state_wrap(builder()))
+            )
+            for name, builder in builders.items()
+        }
+    if args.loop_inhibition:
+        builders = {
+            (name if name == "sparse_context_aux" else f"{name}_loop_inhib"): (
+                builder if name == "sparse_context_aux" else (lambda builder=builder: loop_inhibition_wrap(builder()))
+            )
+            for name, builder in builders.items()
+        }
+    if args.segment_attractor_inhibition:
+        builders = {
+            (name if name == "sparse_context_aux" else f"{name}_segment_attractor"): (
+                builder if name == "sparse_context_aux" else (lambda builder=builder: segment_attractor_wrap(builder()))
+            )
+            for name, builder in builders.items()
+        }
+    if args.loop_escape:
+        builders = {
+            (name if name == "sparse_context_aux" else f"{name}_loop_escape"): (
+                builder if name == "sparse_context_aux" else (lambda builder=builder: loop_escape_wrap(builder()))
             )
             for name, builder in builders.items()
         }

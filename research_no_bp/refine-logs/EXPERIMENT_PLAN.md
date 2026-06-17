@@ -1,5 +1,22 @@
 # Experiment Plan
 
+## Active Goal Reset: 2026-06-17
+
+The active research goal is now:
+
+> Build a new **pure no-BP biomimetic neural model framework** from random/local initialization, using local plasticity, eligibility traces, fixed/random feedback, dendritic/apical error, inhibitory microcircuits, phase/oscillatory binding, recurrent/SSM dynamics, and low-precision/no-raw-data state.
+
+This supersedes the older GPT/API-oriented route. Pretrained LLMs, frozen backbones, and APIs are no longer allowed as the method backbone. Statistical token-count methods such as sparse context memory, continuation backoff, n-gram/Kneser-Ney-style caches, and similar tables are diagnostic baselines only.
+
+New first-stage evidence must come from:
+
+- bAbI/CLUTRR-style QA and relation reasoning trained with pure no-BP answer/relation selectors;
+- center-difference/BP-neighbor diagnostics used only to analyze local update quality;
+- human-learning benchmarks such as Ebbinghaus forgetting, WASD->WDAS interference, habituation to repeated input, and simple visual comparison;
+- TinyStories token modeling only after mechanism validation, with statistical baselines kept out of the main method claim.
+
+Detailed reset document: `refine-logs/GOAL_RESET_2026-06-17_NO_BP_FRAMEWORK.md`.
+
 **Problem**: 构建替代 BP 的高效仿生物神经学习算法，最终支持无原始数据保存的在线学习，并能面向纯仿生结构、在线学习硬件或 neuromorphic 实现。
 **Hard Constraint**: 主方法必须是**纯 no-BP 神经网络类方法**：从随机/局部初始化开始训练，使用局部可塑性、资格迹、固定反馈、树突误差信号、抑制性回路、STDP/BTSP、e-prop、replay 或 reservoir/SSM 动态；不得依赖已经由 BP 训练好的开源 LLM、冻结大模型或 API 主干作为核心性能来源。预训练 LLM/API 只能作为外部上界、后续应用接口或自然语言评测器，不得作为论文主线。
 **Method Thesis**: 当前路线需要从“冻结 LLM + 外挂记忆”和“统计 n-gram memory”转向“纯 no-BP 可训练神经结构”。优先级应回到 DEN1810/dendritic-like 树突双室误差、STDP/BTSP 调制版本、e-prop/三因子 eligibility、feedback alignment、抑制性微回路、recurrent/SSM/reservoir 动态。`continuation_backoff` / n-gram-style sparse memory 只能作为调试工具、统计下界或 sanity baseline，不能作为最终方法或核心 claim；TinyStories/API memory 结果只能作为应用侧参考。
@@ -16,7 +33,7 @@
 | context order ablation | TinyStories tokenizer medium | `sparse_hebbian_context` order=3 CE 4.0796 | order=4 CE 4.1126; order=5 acc 0.370 | order=3 是新的 CE 默认点 |
 | semantic-key memory | TinyStories tokenizer medium | combined_context CE 4.0368 | semantic-only CE 5.36；exact-only CE 4.0796 | semantic bucket 只带来小幅增益 |
 | compositional cue task | held-out `(a,b)` pairs, target `(a+b) mod K` | `target_only_phase_binding_hebbian` held-out acc 1.000 for K=4/8/12 | pair lookup 0.417/0.146/0.093; scrambled phase control 0.500/0.188/0.213; eprop/reservoir/BPTT fail on K=4/8 | 更强的纯 no-BP 正信号：不再使用 cue->phase 直接教师，只用最终 target 三因子信号学习局部相位码 + 复数绑定 + Hebbian 原型 |
-| phase-binding token learner | TinyStories tokenizer 50k/10k, vocab=256 | trace+apical(random-feedback)+inhibition WTA online full precision post CE 2.289, acc 0.437, greedy repeat-2 0.383; variable-type 8-bit row CE 2.295 acc 0.438, serialized state 706,841 bytes; 8-bit all-state row CE 2.523 acc 0.462; 8-bit readout-weight-only CE 2.295, inhibition-only CE 2.289, phase_codes-only CE 2.290, phase_prototypes-only CE 2.289, bias-only CE 2.513, counts-only CE 2.513 | phase WTA post CE 2.427 acc 0.422; trace+inhib post CE 2.358 acc 0.429 repeat-2 0.473; fixed-random gate post CE 2.316; 8-bit fixed clip CE 2.713; 16-bit row CE 2.504; online `sparse_context_aux` post CE 1.297 acc 0.571 | 当前最强纯 no-BP CE 是弱 dynamic apical error modulation + inhibition；随机反馈可承载 apical error。variable-type quantization 已显示向量/矩阵 int8 row + count/prior float32 可接近 full precision，同时 deployable state 约 0.707MB；下一步是 loadable integer checkpoint 和预测一致性验证；统计 auxiliary 仍只作调试/上界 |
+| phase-binding token learner | TinyStories tokenizer 50k/10k, vocab=256 | trace+apical(random-feedback)+inhibition WTA online full precision post CE 2.289, acc 0.437, greedy repeat-2 0.383; variable-type 8-bit row CE 2.295 acc 0.438, serialized state 706,841 bytes; 8-bit all-state row CE 2.523 acc 0.462; 8-bit readout-weight-only CE 2.295, inhibition-only CE 2.289, phase_codes-only CE 2.290, phase_prototypes-only CE 2.289, bias-only CE 2.513, counts-only CE 2.513 | phase WTA post CE 2.427 acc 0.422; trace+inhib post CE 2.358 acc 0.429 repeat-2 0.473; fixed-random gate post CE 2.316; 8-bit fixed clip CE 2.713; 16-bit row CE 2.504; online `sparse_context_aux` post CE 1.297 acc 0.571 | 当前最强纯 no-BP CE 是弱 dynamic apical error modulation + inhibition；随机反馈可承载 apical error。variable-type quantization 已显示向量/矩阵 int8 row + count/prior float32 可接近 full precision，同时 deployable state 约 0.707MB；corrected prediction-only anti-score gives a strong smoke repetition boundary but medium remains a CE/repetition tradeoff, and candidate branch-agreement competition worsens loops; next step remains loadable integer checkpoint and prediction consistency verification；统计 auxiliary 仍只作调试/上界 |
 | phase token order sweep | TinyStories tokenizer 50k/10k, vocab=256 | order=2 phase CE 3.551 acc 0.284 | order=1 CE 3.603; order=3 tuned CE 4.199; order=4 CE 10.462 | 负结果：naive 多 token 相位乘法退化，下一步应做分支化 dendritic/SSM 或门控组合，而不是简单堆 context order |
 | continuation backoff | TinyStories tokenizer medium | continuation_backoff CE 3.3254, acc 0.360 | sparse order=3 CE 4.0796; combined_context CE 4.0368 | 仅作为强统计基线/调试工具；n-gram/Kneser-Ney 风格，不能作为最终路线 |
 | online no-raw stream | TinyStories segmented stream | phase_competitive_online post CE 2.427, acc 0.422; continuation_backoff post CE 1.542, acc 0.791 | phase stream pre CE 3.425, online CE 3.229; sparse aux post CE 1.297 | 纯 phase/WTA 在线学习已跑通且有强正增益；统计 memory/continuation 只保留为适应上界和调试基线 |
@@ -249,7 +266,21 @@ Experiments intentionally cut:
   - [x] checkpoint config/hash validation: derived-state checkpoint stores SHA-256 signature and rejects corrupted/incompatible signatures before loading
   - [x] feature-calibration gate sweep: gate_decay=0.50 improves signed derived checkpoint CE 2.478->2.475 at unchanged 724,317 serialized bytes; dim32 offers smaller 716,093-byte variant with CE 2.480
   - [x] temperature / energy-scale audit: global temperature 0.7 improves bias-free feature-calibrated checkpoint CE 2.475->2.262 at unchanged bytes, beating direct-prior CE 2.295 without statistical token probabilities
-  - [ ] replace global temperature with local adaptive neural gain from WTA margin/branch agreement/inhibition pressure; rerun generation/repetition for best bias-free checkpoint
+  - [x] readout gain model-side calibration: fixed gain 1.428571 reproduces temperature0.7 CE 2.262/acc 0.476 with checkpoint parity 1.000; naive margin dynamic gain negative with CE 2.742
+  - [x] local adaptive scalar readout gain: context-gated gain synapse reaches CE 2.276/acc 0.476 with checkpoint parity 1.000, close to fixed gain but below CE 2.262; stronger gains and base_gain=1.0 are negative, and greedy repetition is unchanged because scalar gain cannot change argmax
+  - [x] branch-agreement gated readout: token-wise dendritic agreement improves fixed-gain bias-free checkpoint seed0 CE 2.262->2.253 and acc 0.476->0.478 with unchanged serialized bytes 724,317 and checkpoint parity 1.000; seed1 repeats direction weakly at CE 2.372->2.370 and acc 0.460->0.462; generation repetition gain is not seed-robust yet
+  - [x] plastic branch-agreement target/wrong updates: small output-row branch-weight plasticity improves seed0 acc to 0.481 with checkpoint parity 1.000 and only 1,536 extra serialized bytes; seed1/seed2 retain small CE/acc direction over fixed gain, but CE-best remains fixed branch agreement and generation repetition does not improve
+  - [x] inhibition-pressure-aware plasticity and loop-pressure diagnostics: pressure-gated plastic branch agreement reaches seed0 CE/acc 2.254/0.482 with checkpoint parity 1.000 and seed1/seed2 small positive ranking direction; generation loop metrics are now logged but repetition is still not improved
+  - [x] dynamic loop-pressure inhibitory state during generation/observation: token-level loop inhibition is slightly negative, transition-level loop inhibition gives only a tiny CE change (best 2.253652->2.253623) while acc/repetition are unchanged and state grows to 793,193 serialized bytes; smoke checkpoint parity remains 1.000
+  - [x] segment-level attractor detector: derived-code segment state can reduce medium greedy repeat-2 0.383->0.305, but only with unacceptable CE/acc cost 2.254/0.482->2.310/0.475 and worse controlled repeat-2, so always-on segment inhibition is not the final mechanism
+  - [x] event-gated segment attractor pressure: margin gates protect CE but worsen repetition; inhibition gates can reduce smoke repetition but medium s2/t0.05 is worse than always-on segment inhibition (2.345/0.467, greedy repeat-2 0.333), so scalar gates are not selective enough
+  - [x] learned loop-escape competitor: segment-pressure-triggered branch-support escape synapses can reduce medium greedy repeat-2 to 0.241 and preserve controlled repeat-2, but CE/acc cost is too high (2.398/0.473), so the current target/wrong update is too broad
+  - [x] candidate-limited loop escape / winner-local anti-loop projection: top-k limiting does not improve CE over broad escape, and winner-suppress only reduces medium greedy repeat-2 to 0.206 by collapsing CE/acc to 2.481/0.385; output-side loop escape is not a stable final route
+  - [x] representation-level recurrent/trace branch-state stabilizer: feature-space residual improves smoke CE/acc to 2.101/0.523 with exact checkpoint parity, but medium is neutral/negative versus R069 (2.262/0.482 vs 2.254/0.482), repetition is not improved, and full projection raises serialized state to 1,060,513 bytes
+  - [x] low-rank / novelty-gated branch-state projection: rank16 preserves smoke CE/acc gain and shrinks medium serialized state to 737,957 bytes with checkpoint parity 1.000, but medium CE remains worse than R069 and novelty gates do not change greedy repetition
+  - [x] low-rank state-space anti-attractor / prediction-only anti-score: update-path bug fixed so teacher-forced updates clear anti pressure; smoke can cut greedy repeat-2 to 0.064 at CE/acc 2.289/0.515, but medium remains a tradeoff (best fixed s0.75 CE/acc 2.409/0.477, greedy repeat-2 0.319, controlled repeat-2 0.121)
+  - [x] candidate-local branch competition audit: top-k candidate limiting preserves smoke CE but behaves like the fixed anti-score; adding positive or negative branch-agreement signal worsens greedy loops, so local branch agreement is not the missing gate
+  - [ ] next recurrent/generation-state mechanism should separate loop-state escape from branch agreement, likely by learning a local state reset or candidate-specific inhibitory trace rather than rewarding branch consensus
   - [x] recurrent/SSM/reservoir + 三因子 eligibility on TinyStories 已跑；fixed reservoir 有边际信号，eligibility transition 写入未通过 seed 复核
   - [x] target-only phase-binding token learner CE signal on TinyStories
   - [x] branched phase token learner improves CE to 3.282
