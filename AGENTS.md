@@ -1,7 +1,19 @@
 # Repository Guidelines
 
 ## 最终目的
-构建一个替代BP的更加高效的仿生物神经的学习算法。最终可以实现在线学习，例如自动浏览网页学习与视频流在线学习，无需保存数据直接在实际中学习。
+构建一个**纯 no-BP** 的仿生物神经学习算法。核心方向必须从头使用局部可塑性、资格迹、反馈对齐、树突/抑制性回路等机制来学习，不能把“已经用 BP 预训练好的开源 LLM / 冻结大模型 / API 主干”作为主方法再外挂局部记忆来充数。
+
+允许把预训练 LLM 仅当作后续对照、应用接口或工程上界，但**不能**作为论文主线、机制主张或最终硬件路线的基础。若要面向在线学习、硬件实现或类脑结构，必须优先做纯 no-BP 原型，再逐步扩展到更大规模模型。
+
+`continuation_backoff`、n-gram、Kneser-Ney-style sparse memory 等方法只能作为调试工具、统计下界或 sanity baseline；它们不属于最终可接受的仿生神经结构路线。
+
+最终候选必须是**神经网络类 no-BP 方法**，例如 dendritic/DEN1810-like 双室或树突误差模型、STDP/BTSP 及其调制版本、e-prop/三因子 eligibility、反馈对齐或抑制性回路模型。统计表格方法可以帮助定位数据、评测和记忆瓶颈，但不能替代神经结构本身。
+
+
+## API地址与密钥
+注意：API耗费金钱，你最好使用本地数据测试正确后才开始大规模测试
+API: https://yzhanghmeng.com
+KEY: sk-6d999a81b2692a0b25d41a3d942deaa5b58c8e8098011ae5f2992591e2383555
 
 ## Project Structure & Module Organization
 
