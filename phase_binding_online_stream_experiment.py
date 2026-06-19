@@ -393,6 +393,908 @@ class OnlineTraceApicalGatedCompetitivePhaseMemory(OnlineTraceCompetitivePhaseMe
         return int(super().state_bytes() + bytes_used)
 
 
+class EPropTraceFeatureMixin:
+    """Finite-window eligibility trace over local phase/trace features."""
+
+    def init_eprop_trace(self, eprop_order: int, eprop_decay: float, eprop_weight: float) -> None:
+        self.eprop_order = max(int(eprop_order), 1)
+        self.eprop_decay = float(np.clip(eprop_decay, 0.0, 0.999))
+        self.eprop_weight = float(np.clip(eprop_weight, 0.0, 1.0))
+        self.max_order = max(int(self.max_order), self.eprop_order)
+
+    def instantaneous_feature(self, context: np.ndarray) -> np.ndarray:
+        return OnlineTraceCompetitivePhaseMemory.feature(self, context)
+
+    def eligibility_feature(self, context: np.ndarray) -> np.ndarray:
+        context = np.asarray(context, dtype=np.int64)
+        current = self.instantaneous_feature(context)
+        state = np.zeros_like(current, dtype=np.float32)
+        start = max(1, len(context) - self.eprop_order + 1)
+        for end in range(start, len(context) + 1):
+            feature = self.instantaneous_feature(context[:end])
+            state = self.eprop_decay * state + feature
+        eligibility = phase.normalize_vector(state)
+        if self.eprop_weight >= 1.0:
+            return eligibility
+        return phase.normalize_vector((1.0 - self.eprop_weight) * current + self.eprop_weight * eligibility)
+
+    def feature(self, context: np.ndarray) -> np.ndarray:
+        return self.eligibility_feature(context)
+
+
+class OnlineEPropTraceCompetitivePhaseMemory(EPropTraceFeatureMixin, OnlineTraceCompetitivePhaseMemory):
+    """WTA readout over a local e-prop-style eligibility trace."""
+
+    def __init__(
+        self,
+        vocab_size: int,
+        cfg: phase.PhaseTokenConfig,
+        branch_orders: list[int],
+        branch_weights: list[float],
+        trace_order: int,
+        trace_dim: int,
+        trace_decay: float,
+        trace_weight: float,
+        eprop_order: int,
+        eprop_decay: float,
+        eprop_weight: float,
+        competitive_lr: float,
+        competitive_neg_k: int,
+        competitive_epochs: int,
+        competitive_score_scale: float,
+        competitive_init: str,
+        competitive_margin: float,
+        seed: int,
+    ) -> None:
+        super().__init__(
+            vocab_size,
+            cfg,
+            branch_orders,
+            branch_weights,
+            trace_order,
+            trace_dim,
+            trace_decay,
+            trace_weight,
+            competitive_lr,
+            competitive_neg_k,
+            competitive_epochs,
+            competitive_score_scale,
+            competitive_init,
+            competitive_margin,
+            seed,
+        )
+        self.init_eprop_trace(eprop_order, eprop_decay, eprop_weight)
+
+
+class OnlineEPropTraceApicalGatedCompetitivePhaseMemory(
+    EPropTraceFeatureMixin,
+    OnlineTraceApicalGatedCompetitivePhaseMemory,
+):
+    """Apical-gated WTA readout over a local e-prop-style eligibility trace."""
+
+    def __init__(
+        self,
+        vocab_size: int,
+        cfg: phase.PhaseTokenConfig,
+        branch_orders: list[int],
+        branch_weights: list[float],
+        trace_order: int,
+        trace_dim: int,
+        trace_decay: float,
+        trace_weight: float,
+        eprop_order: int,
+        eprop_decay: float,
+        eprop_weight: float,
+        apical_decay: float,
+        apical_strength: float,
+        apical_margin: float,
+        apical_min_gate: float,
+        apical_max_gate: float,
+        apical_error_clip: float,
+        competitive_lr: float,
+        competitive_neg_k: int,
+        competitive_epochs: int,
+        competitive_score_scale: float,
+        competitive_init: str,
+        competitive_margin: float,
+        seed: int,
+        apical_error_mode: str = "segment_margin",
+    ) -> None:
+        super().__init__(
+            vocab_size,
+            cfg,
+            branch_orders,
+            branch_weights,
+            trace_order,
+            trace_dim,
+            trace_decay,
+            trace_weight,
+            apical_decay,
+            apical_strength,
+            apical_margin,
+            apical_min_gate,
+            apical_max_gate,
+            apical_error_clip,
+            competitive_lr,
+            competitive_neg_k,
+            competitive_epochs,
+            competitive_score_scale,
+            competitive_init,
+            competitive_margin,
+            seed,
+            apical_error_mode,
+        )
+        self.init_eprop_trace(eprop_order, eprop_decay, eprop_weight)
+
+
+class OnlineDLLDeepLocalMemory(OnlineTraceCompetitivePhaseMemory):
+    """
+    Deep local-learning stack inspired by Dendritic Localized Learning.
+
+    The phase/trace encoder supplies the basal input.  Each hidden layer has an
+    independent fixed random target projection for the next-token label and is
+    updated by its own local squared-error signal only:
+
+        delta_l ~= (target_l[token] - h_l) * activation'(z_l)
+
+    No layer receives a backpropagated downstream gradient, and no raw text is
+    stored in state.
+    """
+
+    def __init__(
+        self,
+        vocab_size: int,
+        cfg: phase.PhaseTokenConfig,
+        branch_orders: list[int],
+        branch_weights: list[float],
+        trace_order: int,
+        trace_dim: int,
+        trace_decay: float,
+        trace_weight: float,
+        dll_hidden_dims: list[int],
+        dll_label_dim: int,
+        dll_lr: float,
+        dll_bias_lr: float,
+        dll_delta_clip: float,
+        dll_activation: str,
+        dll_row_normalize: bool,
+        competitive_lr: float,
+        competitive_neg_k: int,
+        competitive_epochs: int,
+        competitive_score_scale: float,
+        competitive_init: str,
+        competitive_margin: float,
+        seed: int,
+    ) -> None:
+        super().__init__(
+            vocab_size,
+            cfg,
+            branch_orders,
+            branch_weights,
+            trace_order,
+            trace_dim,
+            trace_decay,
+            trace_weight,
+            competitive_lr,
+            competitive_neg_k,
+            competitive_epochs,
+            competitive_score_scale,
+            competitive_init,
+            competitive_margin,
+            seed,
+        )
+        hidden_dims = [max(int(dim), 1) for dim in dll_hidden_dims]
+        if not hidden_dims:
+            raise ValueError("--dll-hidden-dims must contain at least one layer width")
+        self.dll_lr = max(float(dll_lr), 0.0)
+        self.dll_bias_lr = max(float(dll_bias_lr), 0.0)
+        self.dll_delta_clip = max(float(dll_delta_clip), 1e-6)
+        self.dll_activation = str(dll_activation)
+        if self.dll_activation not in {"tanh", "linear"}:
+            raise ValueError(f"unknown DLL activation: {self.dll_activation}")
+        self.dll_row_normalize = bool(dll_row_normalize)
+        self.base_feature_dim = int(self.feature_dim)
+        self.dll_hidden_dims = hidden_dims
+
+        dll_rng = np.random.default_rng(seed + 19349663)
+        label_dim = max(int(dll_label_dim), 1)
+        self.dll_label_codes = phase.normalize_rows(
+            dll_rng.normal(0.0, 1.0, (vocab_size, label_dim)).astype(np.float32)
+        )
+        dims = [self.base_feature_dim] + hidden_dims
+        self.dll_weights: list[np.ndarray] = []
+        self.dll_biases: list[np.ndarray] = []
+        self.dll_feedback: list[np.ndarray] = []
+        self.dll_targets: list[np.ndarray] = []
+        for in_dim, out_dim in zip(dims[:-1], dims[1:]):
+            scale = 1.0 / math.sqrt(max(in_dim, 1))
+            weights = dll_rng.normal(0.0, scale, (out_dim, in_dim)).astype(np.float32)
+            self.dll_weights.append(phase.normalize_rows(weights) if self.dll_row_normalize else weights)
+            self.dll_biases.append(np.zeros(out_dim, dtype=np.float32))
+            feedback = dll_rng.normal(0.0, 1.0 / math.sqrt(label_dim), (out_dim, label_dim)).astype(np.float32)
+            feedback = phase.normalize_rows(feedback)
+            self.dll_feedback.append(feedback)
+            self.dll_targets.append(phase.normalize_rows(self.dll_label_codes @ feedback.T))
+
+        self.feature_dim = hidden_dims[-1]
+        if competitive_init == "random":
+            self.weights = phase.normalize_rows(
+                dll_rng.normal(0.0, 0.01, (vocab_size, self.feature_dim)).astype(np.float32)
+            )
+        else:
+            self.weights = self.dll_targets[-1].copy()
+
+    def base_feature(self, context: np.ndarray) -> np.ndarray:
+        return OnlineTraceCompetitivePhaseMemory.feature(self, context)
+
+    def activate(self, z: np.ndarray) -> np.ndarray:
+        if self.dll_activation == "linear":
+            return z.astype(np.float32, copy=False)
+        return np.tanh(z).astype(np.float32)
+
+    def activation_derivative(self, h: np.ndarray) -> np.ndarray:
+        if self.dll_activation == "linear":
+            return np.ones_like(h, dtype=np.float32)
+        return (1.0 - np.square(h)).astype(np.float32)
+
+    def forward_from_base(self, x: np.ndarray) -> np.ndarray:
+        state = x.astype(np.float32, copy=False)
+        for weights, bias in zip(self.dll_weights, self.dll_biases):
+            hidden = self.activate(weights @ state + bias)
+            state = phase.normalize_vector(hidden)
+        return state
+
+    def feature(self, context: np.ndarray) -> np.ndarray:
+        return self.forward_from_base(self.base_feature(context))
+
+    def update_dll_layers(self, base_feature: np.ndarray, target: int) -> None:
+        state = base_feature.astype(np.float32, copy=False)
+        for idx, (weights, bias, targets) in enumerate(
+            zip(self.dll_weights, self.dll_biases, self.dll_targets)
+        ):
+            hidden = self.activate(weights @ state + bias)
+            local_target = targets[int(target)]
+            delta = (local_target - hidden) * self.activation_derivative(hidden)
+            delta_norm = float(np.linalg.norm(delta))
+            if delta_norm > self.dll_delta_clip:
+                delta = delta * (self.dll_delta_clip / (delta_norm + 1e-8))
+            self.dll_weights[idx] = weights + self.dll_lr * np.outer(delta, state).astype(np.float32)
+            if self.dll_bias_lr > 0.0:
+                self.dll_biases[idx] = bias + self.dll_bias_lr * delta.astype(np.float32)
+            if self.dll_row_normalize:
+                self.dll_weights[idx] = phase.normalize_rows(self.dll_weights[idx])
+            state = phase.normalize_vector(hidden)
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        feature = self.feature(context)
+        return (self.score_scale * (self.weights @ feature) + self.bias_weight * self.output_bias).astype(np.float32)
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        target = int(target)
+        self.branch_model.update_context(context, target)
+        self.output_bias = self.branch_model.output_bias.copy()
+        base = self.base_feature(context)
+        self.update_dll_layers(base, target)
+        feature = self.forward_from_base(base)
+        scores = self.weights @ feature
+        self.weights[target] = phase.normalize_vector(self.weights[target] + self.lr * feature)
+        if self.neg_k <= 0:
+            return
+        scores[target] = -1e9
+        k = min(self.neg_k, self.vocab_size - 1)
+        wrongs = np.argpartition(scores, -k)[-k:]
+        target_score = float(self.weights[target] @ feature)
+        for wrong in wrongs:
+            if float(scores[wrong]) + self.margin > target_score:
+                self.weights[int(wrong)] = phase.normalize_vector(self.weights[int(wrong)] - (self.lr / k) * feature)
+
+    def state_bytes(self) -> int:
+        arrays = [self.dll_label_codes]
+        arrays.extend(self.dll_weights)
+        arrays.extend(self.dll_biases)
+        arrays.extend(self.dll_feedback)
+        arrays.extend(self.dll_targets)
+        return int(super().state_bytes() + sum(array.nbytes for array in arrays))
+
+
+class OnlineNoPropLocalDenoisingMemory(OnlineTraceCompetitivePhaseMemory):
+    """
+    NoProp-style decoupled local denoising stack for online token learning.
+
+    During an update, each layer gets its own noisy target code
+    z_l = sqrt(alpha_l) * target_l + sqrt(1-alpha_l) * noise_l(local_input).
+    The input map learns local_input -> z_l, and the denoiser learns z_l ->
+    target_l.  Deeper layers use the previous layer's clean target code during
+    training, so their local updates do not require a forward chain or any
+    cross-layer gradient.  Inference uses the standard feed-forward chain.
+    """
+
+    def __init__(
+        self,
+        vocab_size: int,
+        cfg: phase.PhaseTokenConfig,
+        branch_orders: list[int],
+        branch_weights: list[float],
+        trace_order: int,
+        trace_dim: int,
+        trace_decay: float,
+        trace_weight: float,
+        noprop_hidden_dims: list[int],
+        noprop_label_dim: int,
+        noprop_alpha_start: float,
+        noprop_alpha_end: float,
+        noprop_lr: float,
+        noprop_denoise_lr: float,
+        noprop_bias_lr: float,
+        noprop_delta_clip: float,
+        noprop_activation: str,
+        noprop_row_normalize: bool,
+        competitive_lr: float,
+        competitive_neg_k: int,
+        competitive_epochs: int,
+        competitive_score_scale: float,
+        competitive_init: str,
+        competitive_margin: float,
+        seed: int,
+    ) -> None:
+        super().__init__(
+            vocab_size,
+            cfg,
+            branch_orders,
+            branch_weights,
+            trace_order,
+            trace_dim,
+            trace_decay,
+            trace_weight,
+            competitive_lr,
+            competitive_neg_k,
+            competitive_epochs,
+            competitive_score_scale,
+            competitive_init,
+            competitive_margin,
+            seed,
+        )
+        hidden_dims = [max(int(dim), 1) for dim in noprop_hidden_dims]
+        if not hidden_dims:
+            raise ValueError("--noprop-hidden-dims must contain at least one layer width")
+        self.noprop_lr = max(float(noprop_lr), 0.0)
+        self.noprop_denoise_lr = max(float(noprop_denoise_lr), 0.0)
+        self.noprop_bias_lr = max(float(noprop_bias_lr), 0.0)
+        self.noprop_delta_clip = max(float(noprop_delta_clip), 1e-6)
+        self.noprop_activation = str(noprop_activation)
+        if self.noprop_activation not in {"tanh", "linear"}:
+            raise ValueError(f"unknown NoProp activation: {self.noprop_activation}")
+        self.noprop_row_normalize = bool(noprop_row_normalize)
+        self.base_feature_dim = int(self.feature_dim)
+        self.noprop_hidden_dims = hidden_dims
+
+        noprop_rng = np.random.default_rng(seed + 23874491)
+        label_dim = max(int(noprop_label_dim), 1)
+        self.noprop_label_codes = phase.normalize_rows(
+            noprop_rng.normal(0.0, 1.0, (vocab_size, label_dim)).astype(np.float32)
+        )
+        dims = [self.base_feature_dim] + hidden_dims
+        layer_count = len(hidden_dims)
+        if layer_count == 1:
+            alphas = [float(noprop_alpha_start)]
+        else:
+            alphas = np.linspace(float(noprop_alpha_start), float(noprop_alpha_end), layer_count).tolist()
+        self.noprop_alphas = np.clip(np.asarray(alphas, dtype=np.float32), 0.0, 1.0)
+
+        self.noprop_targets: list[np.ndarray] = []
+        self.noprop_feedback: list[np.ndarray] = []
+        self.noprop_input_weights: list[np.ndarray] = []
+        self.noprop_input_biases: list[np.ndarray] = []
+        self.noprop_denoise_weights: list[np.ndarray] = []
+        self.noprop_denoise_biases: list[np.ndarray] = []
+        self.noprop_noise_projections: list[np.ndarray] = []
+        for in_dim, out_dim in zip(dims[:-1], dims[1:]):
+            feedback = noprop_rng.normal(0.0, 1.0 / math.sqrt(label_dim), (out_dim, label_dim)).astype(np.float32)
+            feedback = phase.normalize_rows(feedback)
+            self.noprop_feedback.append(feedback)
+            self.noprop_targets.append(phase.normalize_rows(self.noprop_label_codes @ feedback.T))
+
+            input_scale = 1.0 / math.sqrt(max(in_dim, 1))
+            input_weights = noprop_rng.normal(0.0, input_scale, (out_dim, in_dim)).astype(np.float32)
+            self.noprop_input_weights.append(
+                phase.normalize_rows(input_weights) if self.noprop_row_normalize else input_weights
+            )
+            self.noprop_input_biases.append(np.zeros(out_dim, dtype=np.float32))
+
+            denoise_weights = np.eye(out_dim, dtype=np.float32)
+            denoise_weights += noprop_rng.normal(0.0, 0.01, (out_dim, out_dim)).astype(np.float32)
+            self.noprop_denoise_weights.append(
+                phase.normalize_rows(denoise_weights) if self.noprop_row_normalize else denoise_weights
+            )
+            self.noprop_denoise_biases.append(np.zeros(out_dim, dtype=np.float32))
+
+            noise_projection = noprop_rng.normal(0.0, input_scale, (out_dim, in_dim)).astype(np.float32)
+            self.noprop_noise_projections.append(phase.normalize_rows(noise_projection))
+
+        self.feature_dim = hidden_dims[-1]
+        if competitive_init == "random":
+            self.weights = phase.normalize_rows(
+                noprop_rng.normal(0.0, 0.01, (vocab_size, self.feature_dim)).astype(np.float32)
+            )
+        else:
+            self.weights = self.noprop_targets[-1].copy()
+
+    def base_feature(self, context: np.ndarray) -> np.ndarray:
+        return OnlineTraceCompetitivePhaseMemory.feature(self, context)
+
+    def activate(self, z: np.ndarray) -> np.ndarray:
+        if self.noprop_activation == "linear":
+            return z.astype(np.float32, copy=False)
+        return np.tanh(z).astype(np.float32)
+
+    def activation_derivative(self, h: np.ndarray) -> np.ndarray:
+        if self.noprop_activation == "linear":
+            return np.ones_like(h, dtype=np.float32)
+        return (1.0 - np.square(h)).astype(np.float32)
+
+    def local_update(
+        self,
+        weights: np.ndarray,
+        bias: np.ndarray,
+        local_input: np.ndarray,
+        local_target: np.ndarray,
+        lr: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        hidden = self.activate(weights @ local_input + bias)
+        delta = (local_target - hidden) * self.activation_derivative(hidden)
+        delta_norm = float(np.linalg.norm(delta))
+        if delta_norm > self.noprop_delta_clip:
+            delta = delta * (self.noprop_delta_clip / (delta_norm + 1e-8))
+        new_weights = weights + lr * np.outer(delta, local_input).astype(np.float32)
+        if self.noprop_row_normalize:
+            new_weights = phase.normalize_rows(new_weights)
+        new_bias = bias
+        if self.noprop_bias_lr > 0.0:
+            new_bias = bias + self.noprop_bias_lr * delta.astype(np.float32)
+        return new_weights, new_bias, hidden
+
+    def noisy_target(self, layer_idx: int, clean: np.ndarray, local_input: np.ndarray) -> np.ndarray:
+        alpha = float(self.noprop_alphas[layer_idx])
+        noise = phase.normalize_vector(self.noprop_noise_projections[layer_idx] @ local_input)
+        noisy = math.sqrt(alpha) * clean + math.sqrt(max(1.0 - alpha, 0.0)) * noise
+        return phase.normalize_vector(noisy.astype(np.float32))
+
+    def forward_from_base(self, x: np.ndarray) -> np.ndarray:
+        state = x.astype(np.float32, copy=False)
+        for input_weights, input_bias, denoise_weights, denoise_bias in zip(
+            self.noprop_input_weights,
+            self.noprop_input_biases,
+            self.noprop_denoise_weights,
+            self.noprop_denoise_biases,
+        ):
+            noisy_state = phase.normalize_vector(self.activate(input_weights @ state + input_bias))
+            clean_state = self.activate(denoise_weights @ noisy_state + denoise_bias)
+            state = phase.normalize_vector(clean_state)
+        return state
+
+    def feature(self, context: np.ndarray) -> np.ndarray:
+        return self.forward_from_base(self.base_feature(context))
+
+    def update_noprop_layers(self, base_feature: np.ndarray, target: int) -> None:
+        for idx in range(len(self.noprop_targets)):
+            local_input = base_feature if idx == 0 else self.noprop_targets[idx - 1][int(target)]
+            clean = self.noprop_targets[idx][int(target)]
+            noisy = self.noisy_target(idx, clean, local_input)
+            input_weights, input_bias, _ = self.local_update(
+                self.noprop_input_weights[idx],
+                self.noprop_input_biases[idx],
+                local_input,
+                noisy,
+                self.noprop_lr,
+            )
+            denoise_weights, denoise_bias, _ = self.local_update(
+                self.noprop_denoise_weights[idx],
+                self.noprop_denoise_biases[idx],
+                noisy,
+                clean,
+                self.noprop_denoise_lr,
+            )
+            self.noprop_input_weights[idx] = input_weights
+            self.noprop_input_biases[idx] = input_bias
+            self.noprop_denoise_weights[idx] = denoise_weights
+            self.noprop_denoise_biases[idx] = denoise_bias
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        feature = self.feature(context)
+        return (self.score_scale * (self.weights @ feature) + self.bias_weight * self.output_bias).astype(np.float32)
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        target = int(target)
+        self.branch_model.update_context(context, target)
+        self.output_bias = self.branch_model.output_bias.copy()
+        base = self.base_feature(context)
+        self.update_noprop_layers(base, target)
+        feature = self.forward_from_base(base)
+        scores = self.weights @ feature
+        self.weights[target] = phase.normalize_vector(self.weights[target] + self.lr * feature)
+        if self.neg_k <= 0:
+            return
+        scores[target] = -1e9
+        k = min(self.neg_k, self.vocab_size - 1)
+        wrongs = np.argpartition(scores, -k)[-k:]
+        target_score = float(self.weights[target] @ feature)
+        for wrong in wrongs:
+            wrong = int(wrong)
+            if float(scores[wrong]) + self.margin > target_score:
+                self.weights[wrong] = phase.normalize_vector(self.weights[wrong] - (self.lr / k) * feature)
+
+    def state_bytes(self) -> int:
+        arrays = [self.noprop_label_codes, self.noprop_alphas]
+        arrays.extend(self.noprop_targets)
+        arrays.extend(self.noprop_feedback)
+        arrays.extend(self.noprop_input_weights)
+        arrays.extend(self.noprop_input_biases)
+        arrays.extend(self.noprop_denoise_weights)
+        arrays.extend(self.noprop_denoise_biases)
+        arrays.extend(self.noprop_noise_projections)
+        return int(super().state_bytes() + sum(array.nbytes for array in arrays))
+
+
+class OnlineTraceHebbianKVCompetitivePhaseMemory(OnlineTraceCompetitivePhaseMemory):
+    """
+    Trace/phase learner with a pure Hebbian key-value associative branch.
+
+    The KV branch stores a low-rank compressed history, not raw tokens:
+    M <- (1 - decay) M + lr * value[target] outer key(context).
+    At prediction time M @ key(context) is concatenated as another dendritic
+    segment for the local WTA readout.  All writes are local rank-1 plasticity.
+    """
+
+    def __init__(
+        self,
+        vocab_size: int,
+        cfg: phase.PhaseTokenConfig,
+        branch_orders: list[int],
+        branch_weights: list[float],
+        trace_order: int,
+        trace_dim: int,
+        trace_decay: float,
+        trace_weight: float,
+        kv_order: int,
+        kv_dim: int,
+        kv_trace_decay: float,
+        kv_weight: float,
+        kv_score_weight: float,
+        kv_gate_mode: str,
+        kv_gate_base_margin: float,
+        kv_gate_kv_margin: float,
+        kv_gate_min_norm: float,
+        kv_lr: float,
+        kv_decay: float,
+        kv_clip: float,
+        competitive_lr: float,
+        competitive_neg_k: int,
+        competitive_epochs: int,
+        competitive_score_scale: float,
+        competitive_init: str,
+        competitive_margin: float,
+        seed: int,
+    ) -> None:
+        super().__init__(
+            vocab_size,
+            cfg,
+            branch_orders,
+            branch_weights,
+            trace_order,
+            trace_dim,
+            trace_decay,
+            trace_weight,
+            competitive_lr,
+            competitive_neg_k,
+            competitive_epochs,
+            competitive_score_scale,
+            competitive_init,
+            competitive_margin,
+            seed,
+        )
+        self.kv_order = max(int(kv_order), 1)
+        self.max_order = max(self.max_order, self.kv_order)
+        self.kv_dim = max(int(kv_dim), 1)
+        self.kv_trace_decay = float(np.clip(kv_trace_decay, 0.0, 0.999))
+        self.kv_weight = float(kv_weight)
+        self.kv_score_weight = float(kv_score_weight)
+        self.kv_gate_mode = str(kv_gate_mode)
+        if self.kv_gate_mode not in {"none", "norm", "base_low_margin", "kv_margin", "base_and_kv", "base_or_kv"}:
+            raise ValueError(f"unknown KV gate mode: {self.kv_gate_mode}")
+        self.kv_gate_base_margin = max(float(kv_gate_base_margin), 0.0)
+        self.kv_gate_kv_margin = max(float(kv_gate_kv_margin), 0.0)
+        self.kv_gate_min_norm = max(float(kv_gate_min_norm), 0.0)
+        self.kv_lr = max(float(kv_lr), 0.0)
+        self.kv_decay = float(np.clip(kv_decay, 0.0, 0.999))
+        self.kv_clip = max(float(kv_clip), 1e-6)
+        kv_rng = np.random.default_rng(seed + 86028121)
+        self.kv_key_codes = phase.normalize_rows(
+            kv_rng.normal(0.0, 1.0, (vocab_size, self.kv_dim)).astype(np.float32)
+        )
+        self.kv_value_codes = phase.normalize_rows(
+            kv_rng.normal(0.0, 1.0, (vocab_size, self.kv_dim)).astype(np.float32)
+        )
+        self.kv_matrix = np.zeros((self.kv_dim, self.kv_dim), dtype=np.float32)
+        self.kv_writes = 0
+        old_weights = self.weights
+        self.feature_dim += self.kv_dim
+        kv_zeros = np.zeros((vocab_size, self.kv_dim), dtype=np.float32)
+        self.weights = phase.normalize_rows(np.concatenate([old_weights, kv_zeros], axis=1))
+
+    def kv_key_feature(self, context: np.ndarray) -> np.ndarray:
+        state = np.zeros(self.kv_dim, dtype=np.float32)
+        for token in context[-self.kv_order :]:
+            state = self.kv_trace_decay * state + self.kv_key_codes[int(token)]
+        return phase.normalize_vector(state)
+
+    def kv_raw_recall(self, context: np.ndarray) -> np.ndarray:
+        query = self.kv_key_feature(context)
+        return (self.kv_matrix @ query).astype(np.float32)
+
+    def kv_recall_with_norm(self, context: np.ndarray) -> tuple[np.ndarray, float]:
+        raw = self.kv_raw_recall(context)
+        norm = float(np.linalg.norm(raw))
+        return phase.normalize_vector(raw), norm
+
+    def kv_recall(self, context: np.ndarray) -> np.ndarray:
+        recall, _norm = self.kv_recall_with_norm(context)
+        return recall
+
+    def kv_feature(self, context: np.ndarray) -> np.ndarray:
+        return (self.kv_weight * self.kv_recall(context)).astype(np.float32)
+
+    @staticmethod
+    def score_margin(scores: np.ndarray) -> float:
+        if scores.size < 2:
+            return 0.0
+        top2 = np.partition(scores.astype(np.float32, copy=False), -2)[-2:]
+        return float(np.max(top2) - np.min(top2))
+
+    def kv_gate(self, base_scores: np.ndarray, kv_anchor_scores: np.ndarray, recall_norm: float) -> float:
+        if self.kv_score_weight == 0.0:
+            return 0.0
+        norm_ok = recall_norm >= self.kv_gate_min_norm
+        if self.kv_gate_mode == "none":
+            return 1.0 if norm_ok else 0.0
+        if self.kv_gate_mode == "norm":
+            return 1.0 if norm_ok else 0.0
+        base_ok = self.score_margin(base_scores) <= self.kv_gate_base_margin
+        kv_ok = self.score_margin(kv_anchor_scores) >= self.kv_gate_kv_margin
+        if self.kv_gate_mode == "base_low_margin":
+            ok = base_ok
+        elif self.kv_gate_mode == "kv_margin":
+            ok = kv_ok
+        elif self.kv_gate_mode == "base_and_kv":
+            ok = base_ok and kv_ok
+        elif self.kv_gate_mode == "base_or_kv":
+            ok = base_ok or kv_ok
+        else:
+            ok = True
+        return 1.0 if (norm_ok and ok) else 0.0
+
+    def kv_scores(self, context: np.ndarray, base_scores: np.ndarray) -> np.ndarray:
+        if self.kv_score_weight == 0.0:
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        recall, recall_norm = self.kv_recall_with_norm(context)
+        anchor_scores = (self.kv_value_codes @ recall).astype(np.float32)
+        gate = self.kv_gate(base_scores, anchor_scores, recall_norm)
+        return (gate * self.kv_score_weight * anchor_scores).astype(np.float32)
+
+    def feature(self, context: np.ndarray) -> np.ndarray:
+        branch_features = [
+            branch.feature(context[-order:])
+            for order, branch in zip(self.branch_model.branch_orders, self.branch_model.branches)
+        ]
+        trace = self.trace_weight * self.trace_feature(context)
+        kv = self.kv_feature(context)
+        return phase.normalize_vector(np.concatenate(branch_features + [trace, kv]).astype(np.float32))
+
+    def update_kv(self, context: np.ndarray, target: int) -> None:
+        if self.kv_lr <= 0.0:
+            return
+        key = self.kv_key_feature(context)
+        value = self.kv_value_codes[int(target)]
+        self.kv_matrix *= 1.0 - self.kv_decay
+        self.kv_matrix += self.kv_lr * np.outer(value, key).astype(np.float32)
+        np.clip(self.kv_matrix, -self.kv_clip, self.kv_clip, out=self.kv_matrix)
+        self.kv_writes += 1
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        feature = self.feature(context)
+        scores = self.score_scale * (self.weights @ feature) + self.bias_weight * self.output_bias
+        scores = scores + self.kv_scores(context, scores)
+        return scores.astype(np.float32)
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        self.branch_model.update_context(context, target)
+        self.output_bias = self.branch_model.output_bias.copy()
+        self.update_kv(context, int(target))
+        feature = self.feature(context)
+        target = int(target)
+        scores = self.weights @ feature
+        self.weights[target] = phase.normalize_vector(self.weights[target] + self.lr * feature)
+        if self.neg_k <= 0:
+            return
+        scores[target] = -1e9
+        k = min(self.neg_k, self.vocab_size - 1)
+        wrongs = np.argpartition(scores, -k)[-k:]
+        target_score = float(self.weights[target] @ feature)
+        for wrong in wrongs:
+            if float(scores[wrong]) + self.margin > target_score:
+                self.weights[wrong] = phase.normalize_vector(self.weights[wrong] - (self.lr / k) * feature)
+
+    def state_bytes(self) -> int:
+        return int(
+            super().state_bytes()
+            + self.kv_key_codes.nbytes
+            + self.kv_value_codes.nbytes
+            + self.kv_matrix.nbytes
+        )
+
+
+class OnlineTraceHebbianKVApicalGatedCompetitivePhaseMemory(OnlineTraceHebbianKVCompetitivePhaseMemory):
+    """Hebbian KV branch plus branch-local apical prediction-error gates."""
+
+    def __init__(
+        self,
+        vocab_size: int,
+        cfg: phase.PhaseTokenConfig,
+        branch_orders: list[int],
+        branch_weights: list[float],
+        trace_order: int,
+        trace_dim: int,
+        trace_decay: float,
+        trace_weight: float,
+        kv_order: int,
+        kv_dim: int,
+        kv_trace_decay: float,
+        kv_weight: float,
+        kv_score_weight: float,
+        kv_gate_mode: str,
+        kv_gate_base_margin: float,
+        kv_gate_kv_margin: float,
+        kv_gate_min_norm: float,
+        kv_lr: float,
+        kv_decay: float,
+        kv_clip: float,
+        apical_decay: float,
+        apical_strength: float,
+        apical_margin: float,
+        apical_min_gate: float,
+        apical_max_gate: float,
+        apical_error_clip: float,
+        competitive_lr: float,
+        competitive_neg_k: int,
+        competitive_epochs: int,
+        competitive_score_scale: float,
+        competitive_init: str,
+        competitive_margin: float,
+        seed: int,
+        apical_error_mode: str = "segment_margin",
+    ) -> None:
+        super().__init__(
+            vocab_size,
+            cfg,
+            branch_orders,
+            branch_weights,
+            trace_order,
+            trace_dim,
+            trace_decay,
+            trace_weight,
+            kv_order,
+            kv_dim,
+            kv_trace_decay,
+            kv_weight,
+            kv_score_weight,
+            kv_gate_mode,
+            kv_gate_base_margin,
+            kv_gate_kv_margin,
+            kv_gate_min_norm,
+            kv_lr,
+            kv_decay,
+            kv_clip,
+            competitive_lr,
+            competitive_neg_k,
+            competitive_epochs,
+            competitive_score_scale,
+            competitive_init,
+            competitive_margin,
+            seed,
+        )
+        self.apical_decay = float(np.clip(apical_decay, 0.0, 0.999))
+        self.apical_strength = max(float(apical_strength), 0.0)
+        self.apical_margin = float(apical_margin)
+        self.apical_min_gate = max(float(apical_min_gate), 0.0)
+        self.apical_max_gate = max(float(apical_max_gate), self.apical_min_gate + 1e-6)
+        self.apical_error_clip = max(float(apical_error_clip), 1e-6)
+        self.apical_error_mode = str(apical_error_mode)
+        if self.apical_error_mode not in {"segment_margin", "global_margin", "random_feedback", "fixed_random"}:
+            raise ValueError(f"unknown apical error mode: {self.apical_error_mode}")
+        self.segment_slices: list[slice] = []
+        offset = 0
+        for branch in self.branch_model.branches:
+            width = 2 * branch.cfg.complex_dim
+            self.segment_slices.append(slice(offset, offset + width))
+            offset += width
+        self.segment_slices.append(slice(offset, offset + self.trace_codes.shape[1]))
+        offset += self.trace_codes.shape[1]
+        self.segment_slices.append(slice(offset, offset + self.kv_dim))
+        self.apical_error_trace = np.zeros(len(self.segment_slices), dtype=np.float32)
+        apical_rng = np.random.default_rng(seed + 67867967)
+        feedback = np.abs(apical_rng.normal(0.0, 1.0, len(self.segment_slices)).astype(np.float32))
+        self.apical_feedback = feedback / max(float(np.mean(feedback)), 1e-6)
+        fixed_gate = apical_rng.normal(0.0, 1.0, len(self.segment_slices)).astype(np.float32)
+        self.apical_fixed_gate = fixed_gate / max(float(np.max(np.abs(fixed_gate))), 1e-6)
+
+    def reset_dynamic_state(self) -> None:
+        self.apical_error_trace.fill(0.0)
+
+    def branch_error_gates(self, feature: np.ndarray, scores: np.ndarray, target: int) -> np.ndarray:
+        target = int(target)
+        adjusted = scores.astype(np.float32, copy=True)
+        adjusted[target] = -np.inf
+        k = min(max(self.neg_k, 1), self.vocab_size - 1)
+        if k <= 0:
+            return np.ones(len(self.segment_slices), dtype=np.float32)
+        wrongs = np.argpartition(adjusted, -k)[-k:]
+        errors = np.zeros(len(self.segment_slices), dtype=np.float32)
+        full_margin = float(scores[target] - np.max(scores[wrongs]))
+        if self.apical_error_mode == "fixed_random":
+            gates = 1.0 + self.apical_strength * self.apical_fixed_gate
+            return np.clip(gates, self.apical_min_gate, self.apical_max_gate).astype(np.float32)
+        if self.apical_error_mode == "global_margin":
+            errors.fill(max(0.0, self.apical_margin - full_margin))
+        elif self.apical_error_mode == "random_feedback":
+            errors = max(0.0, self.apical_margin - full_margin) * self.apical_feedback
+        else:
+            for idx, segment_slice in enumerate(self.segment_slices):
+                segment = feature[segment_slice]
+                target_score = float(self.weights[target, segment_slice] @ segment)
+                wrong_score = float(np.max(self.weights[wrongs, segment_slice] @ segment))
+                local_margin = target_score - wrong_score
+                errors[idx] = max(0.0, self.apical_margin - local_margin)
+        self.apical_error_trace = self.apical_decay * self.apical_error_trace + errors
+        np.clip(self.apical_error_trace, 0.0, self.apical_error_clip, out=self.apical_error_trace)
+        gates = 1.0 + self.apical_strength * self.apical_error_trace
+        return np.clip(gates, self.apical_min_gate, self.apical_max_gate).astype(np.float32)
+
+    def apply_segment_gates(self, feature: np.ndarray, gates: np.ndarray) -> np.ndarray:
+        gated = feature.astype(np.float32, copy=True)
+        for gate, segment_slice in zip(gates, self.segment_slices):
+            gated[segment_slice] *= float(gate)
+        return phase.normalize_vector(gated)
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        target = int(target)
+        pre_scores = self.scores(context)
+        self.branch_model.update_context(context, target)
+        self.output_bias = self.branch_model.output_bias.copy()
+        self.update_kv(context, target)
+        feature = self.feature(context)
+        gates = self.branch_error_gates(feature, pre_scores, target)
+        gated_feature = self.apply_segment_gates(feature, gates)
+        self.weights[target] = phase.normalize_vector(self.weights[target] + self.lr * gated_feature)
+        if self.neg_k <= 0:
+            return
+        adjusted = pre_scores.astype(np.float32, copy=True)
+        adjusted[target] = -np.inf
+        k = min(self.neg_k, self.vocab_size - 1)
+        wrongs = np.argpartition(adjusted, -k)[-k:]
+        target_score = float(pre_scores[target])
+        for wrong in wrongs:
+            wrong = int(wrong)
+            if float(pre_scores[wrong]) + self.margin > target_score:
+                self.weights[wrong] = phase.normalize_vector(self.weights[wrong] - (self.lr / k) * gated_feature)
+
+    def state_bytes(self) -> int:
+        bytes_used = self.apical_error_trace.nbytes
+        if self.apical_error_mode == "random_feedback":
+            bytes_used += self.apical_feedback.nbytes
+        if self.apical_error_mode == "fixed_random":
+            bytes_used += self.apical_fixed_gate.nbytes
+        return int(super().state_bytes() + bytes_used)
+
+
 class OnlinePlasticSSMCompetitivePhaseMemory:
     """
     Phase branches plus a locally plastic recurrent/SSM branch.
@@ -4029,6 +4931,46 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trace-dim", type=int, default=128)
     parser.add_argument("--trace-decay", type=float, default=0.85)
     parser.add_argument("--trace-weight", type=float, default=1.0)
+    parser.add_argument("--dll-depth-branch", action="store_true")
+    parser.add_argument("--dll-hidden-dims", type=int, nargs="+", default=[256, 256])
+    parser.add_argument("--dll-label-dim", type=int, default=128)
+    parser.add_argument("--dll-lr", type=float, default=0.02)
+    parser.add_argument("--dll-bias-lr", type=float, default=0.002)
+    parser.add_argument("--dll-delta-clip", type=float, default=1.0)
+    parser.add_argument("--dll-activation", choices=["tanh", "linear"], default="tanh")
+    parser.add_argument("--dll-disable-row-normalize", action="store_true")
+    parser.add_argument("--noprop-depth-branch", action="store_true")
+    parser.add_argument("--noprop-hidden-dims", type=int, nargs="+", default=[512])
+    parser.add_argument("--noprop-label-dim", type=int, default=128)
+    parser.add_argument("--noprop-alpha-start", type=float, default=0.85)
+    parser.add_argument("--noprop-alpha-end", type=float, default=0.35)
+    parser.add_argument("--noprop-lr", type=float, default=0.02)
+    parser.add_argument("--noprop-denoise-lr", type=float, default=0.02)
+    parser.add_argument("--noprop-bias-lr", type=float, default=0.002)
+    parser.add_argument("--noprop-delta-clip", type=float, default=1.0)
+    parser.add_argument("--noprop-activation", choices=["tanh", "linear"], default="tanh")
+    parser.add_argument("--noprop-disable-row-normalize", action="store_true")
+    parser.add_argument("--eprop-trace-readout", action="store_true")
+    parser.add_argument("--eprop-order", type=int, default=20)
+    parser.add_argument("--eprop-decay", type=float, default=0.95)
+    parser.add_argument("--eprop-weight", type=float, default=1.0)
+    parser.add_argument("--hebbian-kv-branch", action="store_true")
+    parser.add_argument("--kv-order", type=int, default=96)
+    parser.add_argument("--kv-dim", type=int, default=64)
+    parser.add_argument("--kv-trace-decay", type=float, default=0.95)
+    parser.add_argument("--kv-weight", type=float, default=0.50)
+    parser.add_argument("--kv-score-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--kv-gate-mode",
+        choices=["none", "norm", "base_low_margin", "kv_margin", "base_and_kv", "base_or_kv"],
+        default="none",
+    )
+    parser.add_argument("--kv-gate-base-margin", type=float, default=0.75)
+    parser.add_argument("--kv-gate-kv-margin", type=float, default=0.05)
+    parser.add_argument("--kv-gate-min-norm", type=float, default=0.0)
+    parser.add_argument("--kv-lr", type=float, default=0.04)
+    parser.add_argument("--kv-decay", type=float, default=0.002)
+    parser.add_argument("--kv-clip", type=float, default=2.0)
     parser.add_argument("--apical-gating-branch", action="store_true")
     parser.add_argument("--apical-decay", type=float, default=0.90)
     parser.add_argument("--apical-strength", type=float, default=0.75)
@@ -4471,6 +5413,179 @@ def main() -> None:
             derived_codes=args.branch_state_derived_codes,
         )
 
+    def eprop_trace_memory(apical: bool = False) -> Any:
+        if apical:
+            return OnlineEPropTraceApicalGatedCompetitivePhaseMemory(
+                vocab_size,
+                phase_cfg,
+                args.branch_orders,
+                args.branch_weights,
+                args.trace_order,
+                args.trace_dim,
+                args.trace_decay,
+                args.trace_weight,
+                args.eprop_order,
+                args.eprop_decay,
+                args.eprop_weight,
+                args.apical_decay,
+                args.apical_strength,
+                args.apical_margin,
+                args.apical_min_gate,
+                args.apical_max_gate,
+                args.apical_error_clip,
+                args.competitive_lr,
+                args.competitive_neg_k,
+                args.competitive_epochs,
+                args.competitive_score_scale,
+                args.competitive_init,
+                args.competitive_margin,
+                args.seed,
+                args.apical_error_mode,
+            )
+        return OnlineEPropTraceCompetitivePhaseMemory(
+            vocab_size,
+            phase_cfg,
+            args.branch_orders,
+            args.branch_weights,
+            args.trace_order,
+            args.trace_dim,
+            args.trace_decay,
+            args.trace_weight,
+            args.eprop_order,
+            args.eprop_decay,
+            args.eprop_weight,
+            args.competitive_lr,
+            args.competitive_neg_k,
+            args.competitive_epochs,
+            args.competitive_score_scale,
+            args.competitive_init,
+            args.competitive_margin,
+            args.seed,
+        )
+
+    def trace_kv_memory(apical: bool = False) -> Any:
+        if apical:
+            return OnlineTraceHebbianKVApicalGatedCompetitivePhaseMemory(
+                vocab_size,
+                phase_cfg,
+                args.branch_orders,
+                args.branch_weights,
+                args.trace_order,
+                args.trace_dim,
+                args.trace_decay,
+                args.trace_weight,
+                args.kv_order,
+                args.kv_dim,
+                args.kv_trace_decay,
+                args.kv_weight,
+                args.kv_score_weight,
+                args.kv_gate_mode,
+                args.kv_gate_base_margin,
+                args.kv_gate_kv_margin,
+                args.kv_gate_min_norm,
+                args.kv_lr,
+                args.kv_decay,
+                args.kv_clip,
+                args.apical_decay,
+                args.apical_strength,
+                args.apical_margin,
+                args.apical_min_gate,
+                args.apical_max_gate,
+                args.apical_error_clip,
+                args.competitive_lr,
+                args.competitive_neg_k,
+                args.competitive_epochs,
+                args.competitive_score_scale,
+                args.competitive_init,
+                args.competitive_margin,
+                args.seed,
+                args.apical_error_mode,
+            )
+        return OnlineTraceHebbianKVCompetitivePhaseMemory(
+            vocab_size,
+            phase_cfg,
+            args.branch_orders,
+            args.branch_weights,
+            args.trace_order,
+            args.trace_dim,
+            args.trace_decay,
+            args.trace_weight,
+            args.kv_order,
+            args.kv_dim,
+            args.kv_trace_decay,
+            args.kv_weight,
+            args.kv_score_weight,
+            args.kv_gate_mode,
+            args.kv_gate_base_margin,
+            args.kv_gate_kv_margin,
+            args.kv_gate_min_norm,
+            args.kv_lr,
+            args.kv_decay,
+            args.kv_clip,
+            args.competitive_lr,
+            args.competitive_neg_k,
+            args.competitive_epochs,
+            args.competitive_score_scale,
+            args.competitive_init,
+            args.competitive_margin,
+            args.seed,
+        )
+
+    def dll_depth_memory() -> Any:
+        return OnlineDLLDeepLocalMemory(
+            vocab_size,
+            phase_cfg,
+            args.branch_orders,
+            args.branch_weights,
+            args.trace_order,
+            args.trace_dim,
+            args.trace_decay,
+            args.trace_weight,
+            args.dll_hidden_dims,
+            args.dll_label_dim,
+            args.dll_lr,
+            args.dll_bias_lr,
+            args.dll_delta_clip,
+            args.dll_activation,
+            not args.dll_disable_row_normalize,
+            args.competitive_lr,
+            args.competitive_neg_k,
+            args.competitive_epochs,
+            args.competitive_score_scale,
+            args.competitive_init,
+            args.competitive_margin,
+            args.seed,
+        )
+
+    def noprop_depth_memory() -> Any:
+        return OnlineNoPropLocalDenoisingMemory(
+            vocab_size,
+            phase_cfg,
+            args.branch_orders,
+            args.branch_weights,
+            args.trace_order,
+            args.trace_dim,
+            args.trace_decay,
+            args.trace_weight,
+            args.noprop_hidden_dims,
+            args.noprop_label_dim,
+            args.noprop_alpha_start,
+            args.noprop_alpha_end,
+            args.noprop_lr,
+            args.noprop_denoise_lr,
+            args.noprop_bias_lr,
+            args.noprop_delta_clip,
+            args.noprop_activation,
+            not args.noprop_disable_row_normalize,
+            args.competitive_lr,
+            args.competitive_neg_k,
+            args.competitive_epochs,
+            args.competitive_score_scale,
+            args.competitive_init,
+            args.competitive_margin,
+            args.seed,
+        )
+
     builders = {
         "phase_competitive_online": lambda: OnlineCompetitivePhaseMemory(
             vocab_size,
@@ -4486,6 +5601,48 @@ def main() -> None:
             args.seed,
         ),
     }
+    if args.dll_depth_branch:
+        builders["phase_trace_dll_local_competitive_online"] = lambda: dll_depth_memory()
+        if args.output_fatigue:
+            builders["phase_trace_dll_local_fatigue_competitive_online"] = lambda: OutputFatigueMemory(
+                dll_depth_memory(),
+                strength=args.fatigue_strength,
+                decay=args.fatigue_decay,
+            )
+            if args.adaptive_inhibition:
+                builders["phase_trace_dll_local_fatigue_inhib_competitive_online"] = lambda: adaptive_wrap(
+                    OutputFatigueMemory(
+                        dll_depth_memory(),
+                        strength=args.fatigue_strength,
+                        decay=args.fatigue_decay,
+                    )
+                )
+        if args.adaptive_inhibition:
+            builders["phase_trace_dll_local_inhib_competitive_online"] = lambda: adaptive_wrap(dll_depth_memory())
+        if args.context_gated_inhibition:
+            builders["phase_trace_dll_local_gate_inhib_competitive_online"] = lambda: gated_wrap(dll_depth_memory())
+    if args.noprop_depth_branch:
+        builders["phase_trace_noprop_local_competitive_online"] = lambda: noprop_depth_memory()
+        if args.output_fatigue:
+            builders["phase_trace_noprop_local_fatigue_competitive_online"] = lambda: OutputFatigueMemory(
+                noprop_depth_memory(),
+                strength=args.fatigue_strength,
+                decay=args.fatigue_decay,
+            )
+            if args.adaptive_inhibition:
+                builders["phase_trace_noprop_local_fatigue_inhib_competitive_online"] = lambda: adaptive_wrap(
+                    OutputFatigueMemory(
+                        noprop_depth_memory(),
+                        strength=args.fatigue_strength,
+                        decay=args.fatigue_decay,
+                    )
+                )
+        if args.adaptive_inhibition:
+            builders["phase_trace_noprop_local_inhib_competitive_online"] = lambda: adaptive_wrap(noprop_depth_memory())
+        if args.context_gated_inhibition:
+            builders["phase_trace_noprop_local_gate_inhib_competitive_online"] = lambda: gated_wrap(
+                noprop_depth_memory()
+            )
     if args.output_fatigue:
         builders["phase_fatigue_competitive_online"] = lambda: OutputFatigueMemory(
             OnlineCompetitivePhaseMemory(
@@ -4794,6 +5951,90 @@ def main() -> None:
                         args.seed,
                         args.apical_error_mode,
                     )
+                )
+    if args.eprop_trace_readout:
+        builders["phase_eprop_trace_competitive_online"] = lambda: eprop_trace_memory(apical=False)
+        if args.output_fatigue:
+            builders["phase_eprop_trace_fatigue_competitive_online"] = lambda: OutputFatigueMemory(
+                eprop_trace_memory(apical=False),
+                strength=args.fatigue_strength,
+                decay=args.fatigue_decay,
+            )
+            if args.adaptive_inhibition:
+                builders["phase_eprop_trace_fatigue_inhib_competitive_online"] = lambda: adaptive_wrap(
+                    OutputFatigueMemory(
+                        eprop_trace_memory(apical=False),
+                        strength=args.fatigue_strength,
+                        decay=args.fatigue_decay,
+                    )
+                )
+        if args.adaptive_inhibition:
+            builders["phase_eprop_trace_inhib_competitive_online"] = lambda: adaptive_wrap(
+                eprop_trace_memory(apical=False)
+            )
+        if args.context_gated_inhibition:
+            builders["phase_eprop_trace_gate_inhib_competitive_online"] = lambda: gated_wrap(
+                eprop_trace_memory(apical=False)
+            )
+        if args.apical_gating_branch:
+            builders["phase_eprop_trace_apical_competitive_online"] = lambda: eprop_trace_memory(apical=True)
+            if args.output_fatigue:
+                builders["phase_eprop_trace_apical_fatigue_competitive_online"] = lambda: OutputFatigueMemory(
+                    eprop_trace_memory(apical=True),
+                    strength=args.fatigue_strength,
+                    decay=args.fatigue_decay,
+                )
+                if args.adaptive_inhibition:
+                    builders["phase_eprop_trace_apical_fatigue_inhib_competitive_online"] = lambda: adaptive_wrap(
+                        OutputFatigueMemory(
+                            eprop_trace_memory(apical=True),
+                            strength=args.fatigue_strength,
+                            decay=args.fatigue_decay,
+                        )
+                    )
+            if args.adaptive_inhibition:
+                builders["phase_eprop_trace_apical_inhib_competitive_online"] = lambda: adaptive_wrap(
+                    eprop_trace_memory(apical=True)
+                )
+    if args.hebbian_kv_branch:
+        builders["phase_trace_kv_competitive_online"] = lambda: trace_kv_memory(apical=False)
+        if args.output_fatigue:
+            builders["phase_trace_kv_fatigue_competitive_online"] = lambda: OutputFatigueMemory(
+                trace_kv_memory(apical=False),
+                strength=args.fatigue_strength,
+                decay=args.fatigue_decay,
+            )
+            if args.adaptive_inhibition:
+                builders["phase_trace_kv_fatigue_inhib_competitive_online"] = lambda: adaptive_wrap(
+                    OutputFatigueMemory(
+                        trace_kv_memory(apical=False),
+                        strength=args.fatigue_strength,
+                        decay=args.fatigue_decay,
+                    )
+                )
+        if args.adaptive_inhibition:
+            builders["phase_trace_kv_inhib_competitive_online"] = lambda: adaptive_wrap(trace_kv_memory(apical=False))
+        if args.context_gated_inhibition:
+            builders["phase_trace_kv_gate_inhib_competitive_online"] = lambda: gated_wrap(trace_kv_memory(apical=False))
+        if args.apical_gating_branch:
+            builders["phase_trace_kv_apical_competitive_online"] = lambda: trace_kv_memory(apical=True)
+            if args.output_fatigue:
+                builders["phase_trace_kv_apical_fatigue_competitive_online"] = lambda: OutputFatigueMemory(
+                    trace_kv_memory(apical=True),
+                    strength=args.fatigue_strength,
+                    decay=args.fatigue_decay,
+                )
+                if args.adaptive_inhibition:
+                    builders["phase_trace_kv_apical_fatigue_inhib_competitive_online"] = lambda: adaptive_wrap(
+                        OutputFatigueMemory(
+                            trace_kv_memory(apical=True),
+                            strength=args.fatigue_strength,
+                            decay=args.fatigue_decay,
+                        )
+                    )
+            if args.adaptive_inhibition:
+                builders["phase_trace_kv_apical_inhib_competitive_online"] = lambda: adaptive_wrap(
+                    trace_kv_memory(apical=True)
                 )
     if args.plastic_ssm_branch:
         builders["phase_plastic_ssm_competitive_online"] = lambda: OnlinePlasticSSMCompetitivePhaseMemory(

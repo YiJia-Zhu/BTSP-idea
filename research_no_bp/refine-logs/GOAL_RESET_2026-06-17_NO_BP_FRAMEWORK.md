@@ -19,14 +19,15 @@ The goal is no longer "attach memory to a pretrained LLM" or "win TinyStories wi
 ## Current Data State
 
 - TinyStories is now under `data/TinyStories/`.
-- bAbI QA is locally present under `data/babi_qa/`.
+- bAbI QA loader metadata is locally present under `data/babi_qa/`; actual train/test samples still need to be generated or cached before offline training.
 - GSM8k-Aug is locally present under `data/GSM8k-Aug/`, but it is not a first-stage training target because parsing and arithmetic language reasoning would dominate the mechanism question.
+- CLUTRR is not currently present locally and is not a first-stage dependency.
 
 ## Primary Claims For The New Phase
 
 | Claim | Minimum Convincing Evidence |
 |---|---|
-| C1: Pure no-BP neural mechanisms can learn QA/reasoning beyond local token-cache statistics. | bAbI QA answer classification and CLUTRR-style relation classification beat no-memory, reservoir, and pair lookup on held-out templates/compositions, with statistical baselines clearly labeled diagnostic. |
+| C1: Pure no-BP neural mechanisms can learn QA/reasoning beyond local token-cache statistics. | bAbI QA answer classification beats no-memory, reservoir, and pair lookup on held-out templates/compositions, with statistical baselines clearly labeled diagnostic; CLUTRR-style relation classification remains a later optional extension after data download. |
 | C2: The useful local update can be analyzed as a biologically plausible approximation to task descent without becoming BP. | Center-difference/BP-neighbor diagnostics show when no-BP updates align with loss-reducing directions; training itself remains local/no-BP. |
 | C3: The mechanism explains human-learning phenomena. | Ebbinghaus-style forgetting, WASD->WDAS interference, habituation to repeated input, and simple visual comparison tasks are reproduced by explicit trace/decay/inhibition/gating states. |
 
@@ -34,8 +35,8 @@ The goal is no longer "attach memory to a pretrained LLM" or "win TinyStories wi
 
 1. **Data and loader reset**
    - Update scripts to support `data/TinyStories/TinyStories-train.txt` and `data/TinyStories/TinyStories-valid.txt`.
-   - Add local bAbI loader using `data/babi_qa/`.
-   - Keep GSM8k as a later stress test, not a first-stage proof.
+   - Add local bAbI loader/export path using `data/babi_qa/`; if only metadata is present, export processed JSONL after the dataset is downloaded/cached.
+   - Keep GSM8k and CLUTRR as later stress tests, not first-stage proof.
 
 2. **QA training/evaluation**
    - First target: bAbI `qa1`, then `qa2`, `qa3`, `qa15`, `qa16`.

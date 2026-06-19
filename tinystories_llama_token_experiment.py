@@ -32,8 +32,8 @@ from llama_torch_model import LlamaTorchCausalLM, LlamaTorchConfig, llama1b_body
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_TRAIN = SCRIPT_DIR / "data" / "TinyStories-train.txt"
-DEFAULT_VALID = SCRIPT_DIR / "data" / "TinyStories-valid.txt"
+DEFAULT_TRAIN = SCRIPT_DIR / "data" / "TinyStories" / "TinyStories-train.txt"
+DEFAULT_VALID = SCRIPT_DIR / "data" / "TinyStories" / "TinyStories-valid.txt"
 DEFAULT_TOKENIZER = Path("/private/zhenningshi/model_weights/Llama-3.2-1B-Instruct")
 FALLBACK_SAMPLE_PROMPTS = [
     "A bright spoon rolled beside the window",
