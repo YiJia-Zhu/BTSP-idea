@@ -60,6 +60,29 @@ def summarize(loss_sum: float, correct: int, total: int) -> dict[str, float]:
     return {"loss": float(loss), "ppl": float(math.exp(min(loss, 20.0))), "accuracy": correct / total}
 
 
+def summarize_candidate_ranks(
+    rank_sum: float,
+    margin_sum: float,
+    wrong_margin_sum: float,
+    top_hits: dict[int, int],
+    error_top_hits: dict[int, int],
+    error_count: int,
+    total: int,
+) -> dict[str, float | int]:
+    """Summarize whether errors are top-k winner-selection mistakes."""
+    summary: dict[str, float | int] = {
+        "target_rank_mean": rank_sum / max(total, 1),
+        "target_margin_mean": margin_sum / max(total, 1),
+        "error_count": int(error_count),
+        "error_wrong_margin_mean": wrong_margin_sum / max(error_count, 1),
+    }
+    for k in sorted(top_hits):
+        summary[f"target_top{k}_acc"] = top_hits[k] / max(total, 1)
+        summary[f"error_target_top{k}_rate"] = error_top_hits[k] / max(error_count, 1)
+        summary[f"oracle_top{k}_acc"] = (total - error_count + error_top_hits[k]) / max(total, 1)
+    return summary
+
+
 def truncate_history(history: Sequence[int], keep: int) -> list[int]:
     if keep <= 0:
         return []
@@ -933,6 +956,330 @@ class OnlineNoPropLocalDenoisingMemory(OnlineTraceCompetitivePhaseMemory):
         arrays.extend(self.noprop_denoise_biases)
         arrays.extend(self.noprop_noise_projections)
         return int(super().state_bytes() + sum(array.nbytes for array in arrays))
+
+
+class OnlineUnifiedNoPropCalibrationMemory(OnlineNoPropLocalDenoisingMemory):
+    """
+    U001 unified NoProp core with local calibration and optional eligibility.
+
+    This folds the R096-style calibration and readout gain into the NoProp
+    learner itself, so score computation and local target/wrong updates live in
+    one model core instead of an external wrapper stack.  The optional
+    eligibility pressure is a same-readout, finite-window correction; it is not
+    a separate answer table or task-specific branch.
+    """
+
+    def __init__(
+        self,
+        vocab_size: int,
+        cfg: phase.PhaseTokenConfig,
+        branch_orders: list[int],
+        branch_weights: list[float],
+        trace_order: int,
+        trace_dim: int,
+        trace_decay: float,
+        trace_weight: float,
+        noprop_hidden_dims: list[int],
+        noprop_label_dim: int,
+        noprop_alpha_start: float,
+        noprop_alpha_end: float,
+        noprop_lr: float,
+        noprop_denoise_lr: float,
+        noprop_bias_lr: float,
+        noprop_delta_clip: float,
+        noprop_activation: str,
+        noprop_row_normalize: bool,
+        inhibition_strength: float,
+        inhibition_decay: float,
+        inhibition_lr: float,
+        inhibition_disinhibit_lr: float,
+        inhibition_top_k: int,
+        inhibition_margin: float,
+        inhibition_max_weight: float,
+        calibration_strength: float,
+        calibration_lr: float,
+        calibration_clip: float,
+        calibration_dim: int,
+        calibration_gate_decay: float,
+        calibration_threshold: float,
+        readout_gain: float,
+        eligibility_order: int,
+        eligibility_decay: float,
+        eligibility_score_weight: float,
+        eligibility_top_k: int,
+        competitive_lr: float,
+        competitive_neg_k: int,
+        competitive_epochs: int,
+        competitive_score_scale: float,
+        competitive_init: str,
+        competitive_margin: float,
+        seed: int,
+    ) -> None:
+        super().__init__(
+            vocab_size,
+            cfg,
+            branch_orders,
+            branch_weights,
+            trace_order,
+            trace_dim,
+            trace_decay,
+            trace_weight,
+            noprop_hidden_dims,
+            noprop_label_dim,
+            noprop_alpha_start,
+            noprop_alpha_end,
+            noprop_lr,
+            noprop_denoise_lr,
+            noprop_bias_lr,
+            noprop_delta_clip,
+            noprop_activation,
+            noprop_row_normalize,
+            competitive_lr,
+            competitive_neg_k,
+            competitive_epochs,
+            competitive_score_scale,
+            competitive_init,
+            competitive_margin,
+            seed,
+        )
+        self.unified_inhibition_strength = float(inhibition_strength)
+        self.unified_inhibition_decay = float(np.clip(inhibition_decay, 0.0, 0.999))
+        self.unified_inhibition_lr = max(float(inhibition_lr), 0.0)
+        self.unified_inhibition_disinhibit_lr = max(float(inhibition_disinhibit_lr), 0.0)
+        self.unified_inhibition_top_k = max(int(inhibition_top_k), 0)
+        self.unified_inhibition_margin = float(inhibition_margin)
+        self.unified_inhibition_max_weight = max(float(inhibition_max_weight), 0.0)
+        self.unified_calibration_strength = max(float(calibration_strength), 0.0)
+        self.unified_calibration_lr = max(float(calibration_lr), 0.0)
+        self.unified_calibration_clip = max(float(calibration_clip), 1e-6)
+        self.unified_calibration_gate_decay = float(np.clip(calibration_gate_decay, 0.0, 0.999))
+        self.unified_calibration_threshold = float(calibration_threshold)
+        self.unified_readout_gain = max(float(readout_gain), 1e-6)
+        self.unified_eligibility_order = max(int(eligibility_order), 1)
+        self.unified_eligibility_decay = float(np.clip(eligibility_decay, 0.0, 0.999))
+        self.unified_eligibility_score_weight = float(eligibility_score_weight)
+        self.unified_eligibility_top_k = max(int(eligibility_top_k), 0)
+        self.max_order = max(int(self.max_order), self.unified_eligibility_order)
+        self.unified_calibration_dim = max(int(calibration_dim), 1)
+        unified_rng = np.random.default_rng(seed + 32452843)
+        self.unified_calibration_codes = phase.normalize_rows(
+            unified_rng.normal(
+                0.0,
+                1.0,
+                (self.max_order, self.vocab_size, self.unified_calibration_dim),
+            )
+            .astype(np.float32)
+            .reshape(self.max_order * self.vocab_size, self.unified_calibration_dim)
+        ).reshape(self.max_order, self.vocab_size, self.unified_calibration_dim)
+        self.unified_calibration = np.zeros(
+            (self.vocab_size, self.unified_calibration_dim),
+            dtype=np.float32,
+        )
+        self.unified_calibration_gate = np.zeros(self.unified_calibration_dim, dtype=np.float32)
+        self.unified_activity = np.zeros(self.vocab_size, dtype=np.float32)
+        self.unified_inhibition = np.zeros((self.vocab_size, self.vocab_size), dtype=np.float32)
+
+    def reset_dynamic_state(self) -> None:
+        self.unified_calibration_gate.fill(0.0)
+        self.unified_activity.fill(0.0)
+
+    def observe_output(self, token: int) -> None:
+        self.unified_activity *= self.unified_inhibition_decay
+        self.unified_activity[int(token)] += 1.0
+
+    def observe_prompt(self, token: int) -> None:
+        self.observe_output(token)
+
+    def observe_prediction(self, token: int) -> None:
+        self.observe_output(token)
+
+    def observe(self, context: np.ndarray, target: int) -> None:
+        self.observe_gate(context)
+        self.observe_output(target)
+
+    def context_gate(self, context: np.ndarray) -> np.ndarray:
+        state = np.zeros(self.unified_calibration_dim, dtype=np.float32)
+        clipped = context[-self.max_order :]
+        offset = self.max_order - len(clipped)
+        for pos, token in enumerate(clipped):
+            state += self.unified_calibration_codes[offset + pos, int(token)]
+        gate = phase.normalize_vector(state)
+        if self.unified_calibration_threshold > 0.0:
+            active = np.abs(gate) >= self.unified_calibration_threshold
+            if np.any(active):
+                gate = np.where(active, gate, 0.0).astype(np.float32)
+                gate = phase.normalize_vector(gate)
+        return gate
+
+    def observe_gate(self, context: np.ndarray) -> np.ndarray:
+        gate = self.context_gate(context)
+        self.unified_calibration_gate = phase.normalize_vector(
+            self.unified_calibration_gate_decay * self.unified_calibration_gate + gate
+        )
+        return self.unified_calibration_gate
+
+    def effective_gate(self, context: np.ndarray) -> np.ndarray:
+        gate = self.context_gate(context)
+        if self.unified_calibration_gate_decay <= 0.0 or not np.any(self.unified_calibration_gate):
+            return gate
+        return phase.normalize_vector(gate + self.unified_calibration_gate_decay * self.unified_calibration_gate)
+
+    def top_k_mask(self, scores: np.ndarray, k: int) -> np.ndarray:
+        mask = np.zeros(scores.size, dtype=bool)
+        if k <= 0:
+            mask.fill(True)
+            return mask
+        count = min(int(k), scores.size)
+        if count >= scores.size:
+            mask.fill(True)
+            return mask
+        candidates = np.argpartition(scores.astype(np.float32, copy=False), -count)[-count:]
+        mask[candidates] = True
+        return mask
+
+    def base_scores_from_feature(self, feature: np.ndarray) -> np.ndarray:
+        return (self.score_scale * (self.weights @ feature) + self.bias_weight * self.output_bias).astype(np.float32)
+
+    def inhibited_scores(self, raw_scores: np.ndarray) -> np.ndarray:
+        if self.unified_inhibition_strength == 0.0 or not np.any(self.unified_activity):
+            return raw_scores.astype(np.float32, copy=False)
+        penalty = self.unified_inhibition @ self.unified_activity
+        return (raw_scores.astype(np.float32, copy=False) - self.unified_inhibition_strength * penalty).astype(np.float32)
+
+    def calibrated_scores(self, base_scores: np.ndarray, gate: np.ndarray) -> np.ndarray:
+        signal = self.unified_calibration @ gate
+        return (
+            base_scores.astype(np.float32, copy=False)
+            + self.unified_calibration_strength * signal
+        ).astype(np.float32)
+
+    def eligibility_feature(self, context: np.ndarray, current_feature: np.ndarray) -> np.ndarray:
+        if self.unified_eligibility_score_weight == 0.0:
+            return current_feature
+        state = np.zeros_like(current_feature, dtype=np.float32)
+        start = max(1, len(context) - self.unified_eligibility_order + 1)
+        for end in range(start, len(context) + 1):
+            feature = current_feature if end == len(context) else self.feature(context[:end])
+            state = self.unified_eligibility_decay * state + feature
+        return phase.normalize_vector(state)
+
+    def eligibility_signal(
+        self,
+        context: np.ndarray,
+        current_feature: np.ndarray,
+        base_scores: np.ndarray,
+    ) -> np.ndarray:
+        if self.unified_eligibility_score_weight == 0.0:
+            return np.zeros_like(base_scores, dtype=np.float32)
+        eligibility = self.eligibility_feature(context, current_feature)
+        signal = self.score_scale * (self.weights @ eligibility - self.weights @ current_feature)
+        if self.unified_eligibility_top_k > 0:
+            mask = self.top_k_mask(base_scores, self.unified_eligibility_top_k)
+            limited = np.zeros_like(signal, dtype=np.float32)
+            limited[mask] = signal[mask]
+            signal = limited
+        return signal.astype(np.float32)
+
+    def combined_scores_from_feature(
+        self,
+        context: np.ndarray,
+        feature: np.ndarray,
+        gate: np.ndarray,
+        apply_gain: bool,
+    ) -> np.ndarray:
+        raw_scores = self.base_scores_from_feature(feature)
+        base_scores = self.inhibited_scores(raw_scores)
+        scores = self.calibrated_scores(base_scores, gate)
+        if self.unified_eligibility_score_weight != 0.0:
+            scores = (
+                scores
+                + self.unified_eligibility_score_weight * self.eligibility_signal(context, feature, base_scores)
+            ).astype(np.float32)
+        if apply_gain:
+            scores = (self.unified_readout_gain * scores).astype(np.float32)
+        return scores
+
+    def scores(self, context: np.ndarray) -> np.ndarray:
+        feature = self.feature(context)
+        gate = self.effective_gate(context)
+        return self.combined_scores_from_feature(context, feature, gate, apply_gain=True)
+
+    def learn_unified_inhibition(self, scores: np.ndarray, target: int) -> None:
+        if (
+            self.unified_inhibition_lr <= 0.0
+            or self.unified_inhibition_top_k <= 0
+            or not np.any(self.unified_activity)
+        ):
+            return
+        target = int(target)
+        adjusted = scores.astype(np.float32, copy=True)
+        target_score = float(adjusted[target])
+        adjusted[target] = -np.inf
+        k = min(self.unified_inhibition_top_k, self.vocab_size - 1)
+        if k <= 0:
+            return
+        wrongs = np.argpartition(adjusted, -k)[-k:]
+        active_delta = self.unified_inhibition_lr * self.unified_activity
+        for wrong in wrongs:
+            wrong = int(wrong)
+            if float(adjusted[wrong]) + self.unified_inhibition_margin <= target_score:
+                continue
+            self.unified_inhibition[wrong] = np.minimum(
+                self.unified_inhibition_max_weight,
+                self.unified_inhibition[wrong] + active_delta,
+            )
+        if self.unified_inhibition_disinhibit_lr > 0.0:
+            self.unified_inhibition[target] = np.maximum(
+                0.0,
+                self.unified_inhibition[target] - self.unified_inhibition_disinhibit_lr * self.unified_activity,
+            )
+
+    def learn_unified_calibration(self, scores: np.ndarray, target: int, gate: np.ndarray) -> None:
+        if self.unified_calibration_lr <= 0.0:
+            return
+        target = int(target)
+        pred = int(np.argmax(scores))
+        if pred == target:
+            return
+        delta = self.unified_calibration_lr * gate
+        self.unified_calibration[target] = np.clip(
+            self.unified_calibration[target] + delta,
+            -self.unified_calibration_clip,
+            self.unified_calibration_clip,
+        )
+        self.unified_calibration[pred] = np.clip(
+            self.unified_calibration[pred] - delta,
+            -self.unified_calibration_clip,
+            self.unified_calibration_clip,
+        )
+
+    def update(self, context: np.ndarray, target: int) -> None:
+        target = int(target)
+        feature = self.feature(context)
+        gate = self.effective_gate(context)
+        raw_scores = self.base_scores_from_feature(feature)
+        inhibited_scores = self.inhibited_scores(raw_scores)
+        pre_scores = self.calibrated_scores(inhibited_scores, gate)
+        if self.unified_eligibility_score_weight != 0.0:
+            pre_scores = (
+                pre_scores
+                + self.unified_eligibility_score_weight * self.eligibility_signal(context, feature, inhibited_scores)
+            ).astype(np.float32)
+        self.learn_unified_calibration(pre_scores, target, gate)
+        self.learn_unified_inhibition(inhibited_scores, target)
+        super().update(context, target)
+        self.observe_gate(context)
+        self.observe_output(target)
+
+    def state_bytes(self) -> int:
+        return int(
+            super().state_bytes()
+            + self.unified_calibration_codes.nbytes
+            + self.unified_calibration.nbytes
+            + self.unified_calibration_gate.nbytes
+            + self.unified_activity.nbytes
+            + self.unified_inhibition.nbytes
+        )
 
 
 class OnlineTraceHebbianKVCompetitivePhaseMemory(OnlineTraceCompetitivePhaseMemory):
@@ -2377,6 +2724,7 @@ class BranchStateStabilizerMemory:
         apical_threshold: float,
         gate_gain: float,
         top_k: int,
+        update_target_top_k: int,
         support_clip: float,
         input_mode: str,
         projection_rank: int,
@@ -2418,6 +2766,7 @@ class BranchStateStabilizerMemory:
         self.apical_threshold = max(float(apical_threshold), 0.0)
         self.gate_gain = max(float(gate_gain), 0.0)
         self.top_k = max(int(top_k), 0)
+        self.update_target_top_k = max(int(update_target_top_k), 0)
         self.support_clip = max(float(support_clip), 1e-6)
         self.input_mode = str(input_mode)
         if self.input_mode not in {"feature", "target", "mixed"}:
@@ -2803,6 +3152,10 @@ class BranchStateStabilizerMemory:
         target = int(target)
         adjusted = scores.astype(np.float32, copy=True)
         target_score = float(adjusted[target])
+        if self.update_target_top_k > 0:
+            target_rank = 1 + int(np.sum(adjusted.astype(np.float32, copy=False) > target_score))
+            if target_rank > min(self.update_target_top_k, self.vocab_size):
+                return
         adjusted[target] = -np.inf
         k = min(self.top_k, self.vocab_size - 1)
         if k <= 0:
@@ -2882,6 +3235,7 @@ class BranchStateStabilizerMemory:
             "apical_threshold": float(self.apical_threshold),
             "gate_gain": float(self.gate_gain),
             "top_k": int(self.top_k),
+            "update_target_top_k": int(self.update_target_top_k),
             "support_clip": float(self.support_clip),
             "input_mode": self.input_mode,
             "projection_rank": int(self.projection_rank),
@@ -3219,6 +3573,13 @@ class FeatureConditionedCalibrationMemory:
         gate_dim: int,
         gate_decay: float,
         gate_threshold: float,
+        memory_scope: str,
+        score_top_k: int,
+        update_top_k: int,
+        update_margin: float,
+        update_rank_tau: float,
+        update_margin_tau: float,
+        update_mode: str,
         seed: int,
         derived_codes: bool,
     ) -> None:
@@ -3229,6 +3590,17 @@ class FeatureConditionedCalibrationMemory:
         self.clip = max(float(clip), 1e-6)
         self.gate_decay = float(np.clip(gate_decay, 0.0, 0.999))
         self.gate_threshold = float(gate_threshold)
+        self.memory_scope = str(memory_scope)
+        if self.memory_scope not in {"persistent", "dynamic"}:
+            raise ValueError(f"unknown feature calibration memory scope: {self.memory_scope}")
+        self.score_top_k = max(int(score_top_k), 0)
+        self.update_top_k = max(int(update_top_k), 0)
+        self.update_margin = max(float(update_margin), 0.0)
+        self.update_rank_tau = max(float(update_rank_tau), 0.0)
+        self.update_margin_tau = max(float(update_margin_tau), 0.0)
+        self.update_mode = str(update_mode)
+        if self.update_mode not in {"target_wrong", "wrong_only"}:
+            raise ValueError(f"unknown feature calibration update mode: {self.update_mode}")
         self.seed_offset = int(seed) + 32452843
         self.derived_codes = bool(derived_codes)
         self.derived_state_names = {"calibration_codes"} if derived_codes else set()
@@ -3262,6 +3634,8 @@ class FeatureConditionedCalibrationMemory:
         if hasattr(self.base, "reset_dynamic_state"):
             self.base.reset_dynamic_state()
         self.calibration_gate.fill(0.0)
+        if self.memory_scope == "dynamic":
+            self.calibration.fill(0.0)
 
     def observe_prompt(self, token: int) -> None:
         if hasattr(self.base, "observe_prompt"):
@@ -3287,11 +3661,40 @@ class FeatureConditionedCalibrationMemory:
             return gate
         return phase.normalize_vector(gate + self.gate_decay * self.calibration_gate)
 
+    def top_k_mask(self, scores: np.ndarray, k: int) -> np.ndarray:
+        mask = np.zeros(scores.size, dtype=bool)
+        if k <= 0:
+            mask.fill(True)
+            return mask
+        count = min(int(k), scores.size)
+        if count >= scores.size:
+            mask.fill(True)
+            return mask
+        candidates = np.argpartition(scores.astype(np.float32, copy=False), -count)[-count:]
+        mask[candidates] = True
+        return mask
+
+    def calibrated_scores(self, base_scores: np.ndarray, gate: np.ndarray) -> np.ndarray:
+        signal = self.calibration @ gate
+        if self.score_top_k > 0:
+            mask = self.top_k_mask(base_scores, self.score_top_k)
+            limited = np.zeros_like(signal, dtype=np.float32)
+            limited[mask] = signal[mask]
+            signal = limited
+        return (base_scores.astype(np.float32, copy=False) + self.strength * signal).astype(np.float32)
+
     def scores(self, context: np.ndarray) -> np.ndarray:
         gate = self.effective_gate(context)
-        return (self.base.scores(context) + self.strength * (self.calibration @ gate)).astype(np.float32)
+        base_scores = self.base.scores(context)
+        return self.calibrated_scores(base_scores, gate)
 
-    def learn_calibration(self, scores: np.ndarray, target: int, gate: np.ndarray) -> None:
+    def learn_calibration(
+        self,
+        scores: np.ndarray,
+        target: int,
+        gate: np.ndarray,
+        base_scores: np.ndarray,
+    ) -> None:
         if self.decay < 1.0:
             self.calibration *= self.decay
         if self.lr <= 0.0:
@@ -3300,13 +3703,37 @@ class FeatureConditionedCalibrationMemory:
         pred = int(np.argmax(scores))
         if pred == target:
             return
-        delta = self.lr * gate
-        self.calibration[target] = np.clip(self.calibration[target] + delta, -self.clip, self.clip)
+        if self.update_top_k > 0:
+            update_mask = self.top_k_mask(base_scores, self.update_top_k)
+            if not bool(update_mask[target]):
+                return
+        target_base_score = float(base_scores[target])
+        if self.update_margin > 0.0 and base_scores.size > 1:
+            adjusted = base_scores.astype(np.float32, copy=True)
+            adjusted[target] = -np.inf
+            wrong_score = float(np.max(adjusted))
+            if wrong_score - target_base_score > self.update_margin:
+                return
+        update_weight = 1.0
+        if self.update_rank_tau > 0.0:
+            target_rank = 1 + int(np.sum(base_scores.astype(np.float32, copy=False) > target_base_score))
+            update_weight *= math.exp(-float(max(target_rank - 1, 0)) / self.update_rank_tau)
+        if self.update_margin_tau > 0.0 and base_scores.size > 1:
+            adjusted = base_scores.astype(np.float32, copy=True)
+            adjusted[target] = -np.inf
+            wrong_score = float(np.max(adjusted))
+            update_weight *= math.exp(-max(wrong_score - target_base_score, 0.0) / self.update_margin_tau)
+        if update_weight <= 1e-8:
+            return
+        delta = (self.lr * update_weight) * gate
+        if self.update_mode == "target_wrong":
+            self.calibration[target] = np.clip(self.calibration[target] + delta, -self.clip, self.clip)
         self.calibration[pred] = np.clip(self.calibration[pred] - delta, -self.clip, self.clip)
 
     def update(self, context: np.ndarray, target: int) -> None:
         gate = self.effective_gate(context)
-        self.learn_calibration(self.scores(context), target, gate)
+        base_scores = self.base.scores(context)
+        self.learn_calibration(self.calibrated_scores(base_scores, gate), target, gate, base_scores)
         self.base.update(context, target)
         self.observe_gate(context)
 
@@ -3330,6 +3757,13 @@ class FeatureConditionedCalibrationMemory:
             "clip": float(self.clip),
             "gate_decay": float(self.gate_decay),
             "gate_threshold": float(self.gate_threshold),
+            "memory_scope": self.memory_scope,
+            "score_top_k": int(self.score_top_k),
+            "update_top_k": int(self.update_top_k),
+            "update_margin": float(self.update_margin),
+            "update_rank_tau": float(self.update_rank_tau),
+            "update_margin_tau": float(self.update_margin_tau),
+            "update_mode": self.update_mode,
             "seed_offset": int(self.seed_offset),
             "derived_codes": bool(self.derived_codes),
             "max_order": int(self.max_order),
@@ -3447,6 +3881,9 @@ class LocalAdaptiveReadoutGainMemory:
         gate_threshold: float,
         correct_margin: float,
         mistake_margin: float,
+        update_mode: str,
+        error_clip: float,
+        memory_scope: str,
         seed: int,
         derived_codes: bool,
     ) -> None:
@@ -3462,6 +3899,13 @@ class LocalAdaptiveReadoutGainMemory:
         self.gate_threshold = float(gate_threshold)
         self.correct_margin = float(correct_margin)
         self.mistake_margin = float(mistake_margin)
+        self.update_mode = str(update_mode)
+        if self.update_mode not in {"wta", "ce"}:
+            raise ValueError(f"unknown local readout gain update mode: {self.update_mode}")
+        self.error_clip = max(float(error_clip), 1e-6)
+        self.memory_scope = str(memory_scope)
+        if self.memory_scope not in {"persistent", "dynamic"}:
+            raise ValueError(f"unknown local readout gain memory scope: {self.memory_scope}")
         self.seed_offset = int(seed) + 49979687
         self.derived_codes = bool(derived_codes)
         self.derived_state_names = {"gain_codes"} if derived_codes else set()
@@ -3495,6 +3939,8 @@ class LocalAdaptiveReadoutGainMemory:
         if hasattr(self.base, "reset_dynamic_state"):
             self.base.reset_dynamic_state()
         self.gain_gate.fill(0.0)
+        if self.memory_scope == "dynamic":
+            self.gain_weights.fill(0.0)
 
     def observe_prompt(self, token: int) -> None:
         if hasattr(self.base, "observe_prompt"):
@@ -3536,6 +3982,15 @@ class LocalAdaptiveReadoutGainMemory:
         if self.lr <= 0.0:
             return
         target = int(target)
+        if self.update_mode == "ce":
+            probs = phase.softmax(base_scores.astype(np.float32, copy=False), temperature=1.0)
+            expected_score = float(probs @ base_scores)
+            local_error = float(base_scores[target]) - expected_score
+            delta = self.lr * float(np.clip(local_error, -self.error_clip, self.error_clip))
+            if abs(delta) <= 1e-12:
+                return
+            self.gain_weights = np.clip(self.gain_weights + delta * gate, -self.clip, self.clip).astype(np.float32)
+            return
         adjusted = base_scores.astype(np.float32, copy=True)
         target_score = float(adjusted[target])
         adjusted[target] = -np.inf
@@ -3579,6 +4034,9 @@ class LocalAdaptiveReadoutGainMemory:
             "gate_threshold": float(self.gate_threshold),
             "correct_margin": float(self.correct_margin),
             "mistake_margin": float(self.mistake_margin),
+            "update_mode": self.update_mode,
+            "error_clip": float(self.error_clip),
+            "memory_scope": self.memory_scope,
             "seed_offset": int(self.seed_offset),
             "derived_codes": bool(self.derived_codes),
             "max_order": int(self.max_order),
@@ -4533,12 +4991,25 @@ def run_stream_pass(
     correct = 0
     total = 0
     processed = 0
+    candidate_ks = (2, 4, 8)
+    rank_sum = 0.0
+    margin_sum = 0.0
+    wrong_margin_sum = 0.0
+    top_hits = {k: 0 for k in candidate_ks}
+    error_top_hits = {k: 0 for k in candidate_ks}
+    error_count = 0
     for segment_idx, (start, end) in enumerate(segment_windows(ids, segment_tokens)):
         segment = ids[start:end]
         segment_history = list(history)
         seg_loss = 0.0
         seg_correct = 0
         seg_total = 0
+        seg_rank_sum = 0.0
+        seg_margin_sum = 0.0
+        seg_wrong_margin_sum = 0.0
+        seg_top_hits = {k: 0 for k in candidate_ks}
+        seg_error_top_hits = {k: 0 for k in candidate_ks}
+        seg_error_count = 0
         for idx in range(len(segment) - 1):
             current = int(segment[idx])
             target = int(segment[idx + 1])
@@ -4547,10 +5018,28 @@ def run_stream_pass(
                 segment_history = truncate_history(segment_history + [current], order - 1)
                 continue
             context = np.array(context_list, dtype=np.int64)
-            loss, pred = softmax_loss_and_pred(memory.scores(context), target, temperature)
+            scores = memory.scores(context)
+            loss, pred = softmax_loss_and_pred(scores, target, temperature)
+            target_score = float(scores[target])
+            adjusted = scores.astype(np.float32, copy=True)
+            adjusted[target] = -np.inf
+            best_wrong_score = float(np.max(adjusted)) if adjusted.size > 1 else -np.inf
+            rank = 1 + int(np.sum(scores.astype(np.float32, copy=False) > target_score))
+            target_margin = target_score - best_wrong_score
             seg_loss += loss
-            seg_correct += int(pred == target)
+            is_correct = int(pred == target)
+            seg_correct += is_correct
             seg_total += 1
+            seg_rank_sum += rank
+            seg_margin_sum += target_margin
+            for k in candidate_ks:
+                hit = int(rank <= min(k, scores.size))
+                seg_top_hits[k] += hit
+            if not is_correct:
+                seg_error_count += 1
+                seg_wrong_margin_sum += best_wrong_score - target_score
+                for k in candidate_ks:
+                    seg_error_top_hits[k] += int(rank <= min(k, scores.size))
             if update:
                 memory.update(context, target)
             elif hasattr(memory, "observe"):
@@ -4560,8 +5049,26 @@ def run_stream_pass(
         loss_sum += seg_loss
         correct += seg_correct
         total += seg_total
+        rank_sum += seg_rank_sum
+        margin_sum += seg_margin_sum
+        wrong_margin_sum += seg_wrong_margin_sum
+        error_count += seg_error_count
+        for k in candidate_ks:
+            top_hits[k] += seg_top_hits[k]
+            error_top_hits[k] += seg_error_top_hits[k]
         processed += seg_total
         seg_summary = summarize(seg_loss, seg_correct, seg_total)
+        seg_summary.update(
+            summarize_candidate_ranks(
+                seg_rank_sum,
+                seg_margin_sum,
+                seg_wrong_margin_sum,
+                seg_top_hits,
+                seg_error_top_hits,
+                seg_error_count,
+                seg_total,
+            )
+        )
         state_bytes = memory.state_bytes()
         rows.append(
             {
@@ -4574,6 +5081,19 @@ def run_stream_pass(
                 "loss": seg_summary["loss"],
                 "ppl": seg_summary["ppl"],
                 "accuracy": seg_summary["accuracy"],
+                "target_rank_mean": seg_summary["target_rank_mean"],
+                "target_margin_mean": seg_summary["target_margin_mean"],
+                "error_count": seg_summary["error_count"],
+                "error_wrong_margin_mean": seg_summary["error_wrong_margin_mean"],
+                "target_top2_acc": seg_summary["target_top2_acc"],
+                "target_top4_acc": seg_summary["target_top4_acc"],
+                "target_top8_acc": seg_summary["target_top8_acc"],
+                "error_target_top2_rate": seg_summary["error_target_top2_rate"],
+                "error_target_top4_rate": seg_summary["error_target_top4_rate"],
+                "error_target_top8_rate": seg_summary["error_target_top8_rate"],
+                "oracle_top2_acc": seg_summary["oracle_top2_acc"],
+                "oracle_top4_acc": seg_summary["oracle_top4_acc"],
+                "oracle_top8_acc": seg_summary["oracle_top8_acc"],
                 "state_bytes": state_bytes,
                 "bytes_per_target": state_bytes / max(processed, 1),
                 "active_contexts": memory.active_contexts(),
@@ -4594,6 +5114,17 @@ def run_stream_pass(
             "history_tokens": len(history),
             "stores_raw_text": False,
         }
+    )
+    summary.update(
+        summarize_candidate_ranks(
+            rank_sum,
+            margin_sum,
+            wrong_margin_sum,
+            top_hits,
+            error_top_hits,
+            error_count,
+            total,
+        )
     )
     return summary, history, rows
 
@@ -4618,6 +5149,13 @@ def state_pickle_bytes(obj: Any) -> int:
 
 def clone_memory(memory: Any) -> Any:
     return copy.deepcopy(memory)
+
+
+def clone_for_eval(memory: Any, reset_dynamic: bool) -> Any:
+    cloned = clone_memory(memory)
+    if reset_dynamic and hasattr(cloned, "reset_dynamic_state"):
+        cloned.reset_dynamic_state()
+    return cloned
 
 
 def decode_compact_ids(tokenizer: Any, kept_raw: np.ndarray, ids: Sequence[int]) -> str:
@@ -4896,6 +5434,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup-token-limit", type=int, default=0)
     parser.add_argument("--stream-token-limit", type=int, default=0)
     parser.add_argument("--retention-token-limit", type=int, default=1024)
+    parser.add_argument("--retention-reset-dynamic", action="store_true")
     parser.add_argument("--segment-tokens", type=int, default=256)
     parser.add_argument("--method-filter", nargs="+", default=[])
     parser.add_argument("--low-precision-bits", type=int, default=0)
@@ -4950,6 +5489,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--noprop-delta-clip", type=float, default=1.0)
     parser.add_argument("--noprop-activation", choices=["tanh", "linear"], default="tanh")
     parser.add_argument("--noprop-disable-row-normalize", action="store_true")
+    parser.add_argument("--unified-noprop-core", action="store_true")
+    parser.add_argument("--unified-calibration-strength", type=float, default=1.0)
+    parser.add_argument("--unified-calibration-lr", type=float, default=0.02)
+    parser.add_argument("--unified-calibration-clip", type=float, default=2.0)
+    parser.add_argument("--unified-calibration-dim", type=int, default=64)
+    parser.add_argument("--unified-calibration-gate-decay", type=float, default=0.50)
+    parser.add_argument("--unified-calibration-threshold", type=float, default=0.0)
+    parser.add_argument("--unified-readout-gain", type=float, default=1.15)
+    parser.add_argument("--unified-eligibility-order", type=int, default=4)
+    parser.add_argument("--unified-eligibility-decay", type=float, default=0.90)
+    parser.add_argument("--unified-eligibility-score-weight", type=float, default=0.0)
+    parser.add_argument("--unified-eligibility-top-k", type=int, default=8)
     parser.add_argument("--eprop-trace-readout", action="store_true")
     parser.add_argument("--eprop-order", type=int, default=20)
     parser.add_argument("--eprop-decay", type=float, default=0.95)
@@ -5030,6 +5581,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--feature-calibration-gate-decay", type=float, default=0.0)
     parser.add_argument("--feature-calibration-threshold", type=float, default=0.0)
     parser.add_argument("--feature-calibration-derived-codes", action="store_true")
+    parser.add_argument("--transient-feature-calibration", action="store_true")
+    parser.add_argument("--transient-feature-calibration-strength", type=float, default=0.25)
+    parser.add_argument("--transient-feature-calibration-lr", type=float, default=0.005)
+    parser.add_argument("--transient-feature-calibration-decay", type=float, default=1.0)
+    parser.add_argument("--transient-feature-calibration-clip", type=float, default=1.0)
+    parser.add_argument("--transient-feature-calibration-dim", type=int, default=32)
+    parser.add_argument("--transient-feature-calibration-gate-decay", type=float, default=0.50)
+    parser.add_argument("--transient-feature-calibration-threshold", type=float, default=0.0)
+    parser.add_argument("--transient-feature-calibration-score-top-k", type=int, default=0)
+    parser.add_argument("--transient-feature-calibration-update-top-k", type=int, default=0)
+    parser.add_argument("--transient-feature-calibration-update-margin", type=float, default=0.0)
+    parser.add_argument("--transient-feature-calibration-update-rank-tau", type=float, default=0.0)
+    parser.add_argument("--transient-feature-calibration-update-margin-tau", type=float, default=0.0)
+    parser.add_argument("--transient-feature-calibration-derived-codes", action="store_true")
+    parser.add_argument("--transient-winner-inhibition", action="store_true")
+    parser.add_argument("--transient-winner-inhibit-strength", type=float, default=0.25)
+    parser.add_argument("--transient-winner-inhibit-lr", type=float, default=0.005)
+    parser.add_argument("--transient-winner-inhibit-decay", type=float, default=1.0)
+    parser.add_argument("--transient-winner-inhibit-clip", type=float, default=1.0)
+    parser.add_argument("--transient-winner-inhibit-dim", type=int, default=32)
+    parser.add_argument("--transient-winner-inhibit-gate-decay", type=float, default=0.50)
+    parser.add_argument("--transient-winner-inhibit-threshold", type=float, default=0.0)
+    parser.add_argument("--transient-winner-inhibit-derived-codes", action="store_true")
     parser.add_argument("--readout-gain", type=float, default=1.0)
     parser.add_argument("--readout-gain-mode", choices=["fixed", "margin"], default="fixed")
     parser.add_argument("--readout-gain-margin-center", type=float, default=1.0)
@@ -5049,6 +5623,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-readout-gain-threshold", type=float, default=0.0)
     parser.add_argument("--local-readout-gain-correct-margin", type=float, default=0.0)
     parser.add_argument("--local-readout-gain-mistake-margin", type=float, default=0.0)
+    parser.add_argument("--local-readout-gain-update-mode", choices=["wta", "ce"], default="wta")
+    parser.add_argument("--local-readout-gain-error-clip", type=float, default=1.0)
+    parser.add_argument("--local-readout-gain-memory-scope", choices=["persistent", "dynamic"], default="persistent")
     parser.add_argument("--local-readout-gain-derived-codes", action="store_true")
     parser.add_argument("--branch-state-stabilizer", action="store_true")
     parser.add_argument("--branch-state-strength", type=float, default=0.10)
@@ -5068,6 +5645,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--branch-state-apical-threshold", type=float, default=0.0)
     parser.add_argument("--branch-state-gate-gain", type=float, default=1.0)
     parser.add_argument("--branch-state-top-k", type=int, default=1)
+    parser.add_argument("--branch-state-update-target-top-k", type=int, default=0)
     parser.add_argument("--branch-state-support-clip", type=float, default=3.0)
     parser.add_argument("--branch-state-input-mode", choices=["feature", "target", "mixed"], default="mixed")
     parser.add_argument("--branch-state-projection-rank", type=int, default=0)
@@ -5261,8 +5839,57 @@ def main() -> None:
             gate_dim=args.feature_calibration_dim,
             gate_decay=args.feature_calibration_gate_decay,
             gate_threshold=args.feature_calibration_threshold,
+            memory_scope="persistent",
+            score_top_k=0,
+            update_top_k=0,
+            update_margin=0.0,
+            update_rank_tau=0.0,
+            update_margin_tau=0.0,
+            update_mode="target_wrong",
             seed=args.seed,
             derived_codes=args.feature_calibration_derived_codes,
+        )
+
+    def transient_feature_calibration_wrap(base: Any) -> FeatureConditionedCalibrationMemory:
+        return FeatureConditionedCalibrationMemory(
+            base,
+            strength=args.transient_feature_calibration_strength,
+            lr=args.transient_feature_calibration_lr,
+            decay=args.transient_feature_calibration_decay,
+            clip=args.transient_feature_calibration_clip,
+            gate_dim=args.transient_feature_calibration_dim,
+            gate_decay=args.transient_feature_calibration_gate_decay,
+            gate_threshold=args.transient_feature_calibration_threshold,
+            memory_scope="dynamic",
+            score_top_k=args.transient_feature_calibration_score_top_k,
+            update_top_k=args.transient_feature_calibration_update_top_k,
+            update_margin=args.transient_feature_calibration_update_margin,
+            update_rank_tau=args.transient_feature_calibration_update_rank_tau,
+            update_margin_tau=args.transient_feature_calibration_update_margin_tau,
+            update_mode="target_wrong",
+            seed=args.seed + 104729,
+            derived_codes=args.transient_feature_calibration_derived_codes,
+        )
+
+    def transient_winner_inhibition_wrap(base: Any) -> FeatureConditionedCalibrationMemory:
+        return FeatureConditionedCalibrationMemory(
+            base,
+            strength=args.transient_winner_inhibit_strength,
+            lr=args.transient_winner_inhibit_lr,
+            decay=args.transient_winner_inhibit_decay,
+            clip=args.transient_winner_inhibit_clip,
+            gate_dim=args.transient_winner_inhibit_dim,
+            gate_decay=args.transient_winner_inhibit_gate_decay,
+            gate_threshold=args.transient_winner_inhibit_threshold,
+            memory_scope="dynamic",
+            score_top_k=0,
+            update_top_k=0,
+            update_margin=0.0,
+            update_rank_tau=0.0,
+            update_margin_tau=0.0,
+            update_mode="wrong_only",
+            seed=args.seed + 209759,
+            derived_codes=args.transient_winner_inhibit_derived_codes,
         )
 
     def readout_gain_wrap(base: Any) -> ReadoutGainMemory:
@@ -5291,6 +5918,9 @@ def main() -> None:
             gate_threshold=args.local_readout_gain_threshold,
             correct_margin=args.local_readout_gain_correct_margin,
             mistake_margin=args.local_readout_gain_mistake_margin,
+            update_mode=args.local_readout_gain_update_mode,
+            error_clip=args.local_readout_gain_error_clip,
+            memory_scope=args.local_readout_gain_memory_scope,
             seed=args.seed,
             derived_codes=args.local_readout_gain_derived_codes,
         )
@@ -5395,6 +6025,7 @@ def main() -> None:
             apical_threshold=args.branch_state_apical_threshold,
             gate_gain=args.branch_state_gate_gain,
             top_k=args.branch_state_top_k,
+            update_target_top_k=args.branch_state_update_target_top_k,
             support_clip=args.branch_state_support_clip,
             input_mode=args.branch_state_input_mode,
             projection_rank=args.branch_state_projection_rank,
@@ -5586,6 +6217,53 @@ def main() -> None:
             args.seed,
         )
 
+    def unified_noprop_memory() -> Any:
+        return OnlineUnifiedNoPropCalibrationMemory(
+            vocab_size,
+            phase_cfg,
+            args.branch_orders,
+            args.branch_weights,
+            args.trace_order,
+            args.trace_dim,
+            args.trace_decay,
+            args.trace_weight,
+            args.noprop_hidden_dims,
+            args.noprop_label_dim,
+            args.noprop_alpha_start,
+            args.noprop_alpha_end,
+            args.noprop_lr,
+            args.noprop_denoise_lr,
+            args.noprop_bias_lr,
+            args.noprop_delta_clip,
+            args.noprop_activation,
+            not args.noprop_disable_row_normalize,
+            args.inhibit_strength,
+            args.inhibit_decay,
+            args.inhibit_lr,
+            args.inhibit_disinhibit_lr,
+            args.inhibit_top_k,
+            args.inhibit_margin,
+            args.inhibit_max_weight,
+            args.unified_calibration_strength,
+            args.unified_calibration_lr,
+            args.unified_calibration_clip,
+            args.unified_calibration_dim,
+            args.unified_calibration_gate_decay,
+            args.unified_calibration_threshold,
+            args.unified_readout_gain,
+            args.unified_eligibility_order,
+            args.unified_eligibility_decay,
+            args.unified_eligibility_score_weight,
+            args.unified_eligibility_top_k,
+            args.competitive_lr,
+            args.competitive_neg_k,
+            args.competitive_epochs,
+            args.competitive_score_scale,
+            args.competitive_init,
+            args.competitive_margin,
+            args.seed,
+        )
+
     builders = {
         "phase_competitive_online": lambda: OnlineCompetitivePhaseMemory(
             vocab_size,
@@ -5643,6 +6321,8 @@ def main() -> None:
             builders["phase_trace_noprop_local_gate_inhib_competitive_online"] = lambda: gated_wrap(
                 noprop_depth_memory()
             )
+    if args.unified_noprop_core:
+        builders["u001_unified_noprop_calib_online"] = lambda: unified_noprop_memory()
     if args.output_fatigue:
         builders["phase_fatigue_competitive_online"] = lambda: OutputFatigueMemory(
             OnlineCompetitivePhaseMemory(
@@ -6396,6 +7076,24 @@ def main() -> None:
             )
             for name, builder in builders.items()
         }
+    if args.transient_feature_calibration:
+        builders = {
+            (name if name == "sparse_context_aux" else f"{name}_transient_feature_calib"): (
+                builder
+                if name == "sparse_context_aux"
+                else (lambda builder=builder: transient_feature_calibration_wrap(builder()))
+            )
+            for name, builder in builders.items()
+        }
+    if args.transient_winner_inhibition:
+        builders = {
+            (name if name == "sparse_context_aux" else f"{name}_winner_inhib"): (
+                builder
+                if name == "sparse_context_aux"
+                else (lambda builder=builder: transient_winner_inhibition_wrap(builder()))
+            )
+            for name, builder in builders.items()
+        }
     if args.local_readout_gain:
         builders = {
             (name if name == "sparse_context_aux" else f"{name}_local_gain"): (
@@ -6494,7 +7192,12 @@ def main() -> None:
         )
         warmup_seconds = time.perf_counter() - start
         retention_ids = train_ids[: min(len(train_ids), args.retention_token_limit)]
-        retention_before = evaluate_sequence(clone_memory(memory), retention_ids, [], args.temperature)
+        retention_before = evaluate_sequence(
+            clone_for_eval(memory, args.retention_reset_dynamic),
+            retention_ids,
+            [],
+            args.temperature,
+        )
         generation_rows.extend(
             build_generation_rows(
                 method,
@@ -6561,7 +7264,12 @@ def main() -> None:
             temperature=args.temperature,
         )
         post_seconds = time.perf_counter() - start
-        retention_after = evaluate_sequence(clone_memory(memory), retention_ids, [], args.temperature)
+        retention_after = evaluate_sequence(
+            clone_for_eval(memory, args.retention_reset_dynamic),
+            retention_ids,
+            [],
+            args.temperature,
+        )
         generation_rows.extend(
             build_generation_rows(
                 method,
@@ -6599,16 +7307,37 @@ def main() -> None:
             "warmup_acc": warmup["accuracy"],
             "stream_pre_loss": stream_pre["loss"],
             "stream_pre_acc": stream_pre["accuracy"],
+            "stream_pre_target_rank": stream_pre["target_rank_mean"],
+            "stream_pre_top4_acc": stream_pre["target_top4_acc"],
+            "stream_pre_error_top4": stream_pre["error_target_top4_rate"],
+            "stream_pre_oracle_top4_acc": stream_pre["oracle_top4_acc"],
+            "stream_pre_error_margin": stream_pre["error_wrong_margin_mean"],
             "stream_online_loss": stream_online["loss"],
             "stream_online_acc": stream_online["accuracy"],
+            "stream_online_target_rank": stream_online["target_rank_mean"],
+            "stream_online_top4_acc": stream_online["target_top4_acc"],
+            "stream_online_error_top4": stream_online["error_target_top4_rate"],
+            "stream_online_oracle_top4_acc": stream_online["oracle_top4_acc"],
+            "stream_online_error_margin": stream_online["error_wrong_margin_mean"],
             "stream_post_loss": stream_post["loss"],
             "stream_post_acc": stream_post["accuracy"],
+            "stream_post_target_rank": stream_post["target_rank_mean"],
+            "stream_post_top4_acc": stream_post["target_top4_acc"],
+            "stream_post_error_top4": stream_post["error_target_top4_rate"],
+            "stream_post_oracle_top4_acc": stream_post["oracle_top4_acc"],
+            "stream_post_error_margin": stream_post["error_wrong_margin_mean"],
             "stream_delta_loss": stream_pre["loss"] - stream_post["loss"],
             "online_to_post_delta": stream_online["loss"] - stream_post["loss"],
             "retention_before_loss": retention_before["loss"],
             "retention_before_acc": retention_before["accuracy"],
+            "retention_before_top4_acc": retention_before["target_top4_acc"],
+            "retention_before_error_top4": retention_before["error_target_top4_rate"],
+            "retention_before_oracle_top4_acc": retention_before["oracle_top4_acc"],
             "retention_after_loss": retention_after["loss"],
             "retention_after_acc": retention_after["accuracy"],
+            "retention_after_top4_acc": retention_after["target_top4_acc"],
+            "retention_after_error_top4": retention_after["error_target_top4_rate"],
+            "retention_after_oracle_top4_acc": retention_after["oracle_top4_acc"],
             "warmup_targets": warmup["target_tokens"],
             "stream_targets": stream_post["target_tokens"],
             "warmup_seconds": warmup_seconds,

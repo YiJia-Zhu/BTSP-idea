@@ -2,8 +2,11 @@
 
 日期：2026-06-03
 
+> **统一模型警告（2026-06-19）**：本仓库早期 `Rxxx` 与 `llm-token/ITERATION_*` 文档包含大量探索性、统计 baseline、API adapter、bAbI/QA19 数据集特化诊断。QA19/result-patching 报告 `R180-R252` 及对应输出已物理删除，避免继续误导主线。剩余旧结论不能直接作为最终模型结构依据，必须先通过 `UNIFIED_MODEL_CONTRACT.md`：同一个纯 no-BP 神经模型核心、任务无关训练接口、无预训练主干、无数据集专用模块、优先简洁核心修改。
+
 ## Documents
 
+- `UNIFIED_MODEL_CONTRACT.md`
 - `idea-stage/LITERATURE_REVIEW.md`
 - `idea-stage/IDEA_REPORT.md`
 - `review-stage/AUTO_REVIEW.md`
@@ -1328,35 +1331,29 @@ Use:
 | 2026-06-19 07:19 | /analyze-results | `../output/babi_branch_arbitration_r179_conflict_feature_scan/threshold_scan.csv` | results | R179 conflict threshold rule scan |
 | 2026-06-19 07:19 | /analyze-results | `../output/babi_branch_arbitration_r179_conflict_feature_scan/best_aggregate_rules.csv` | results | R179 best aggregate margin rules |
 | 2026-06-19 07:27 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R180 full-answer metrics for multi-token bAbI QA answers |
-| 2026-06-19 07:27 | /experiment-bridge | `refine-logs/R180_FULL_ANSWER_QA19_EVAL_2026-06-19.md` | report | R180 full-answer QA19 evaluation integrity report |
 | 2026-06-19 07:27 | /experiment-bridge | `../output/babi_unified_token_qa_r180_full_answer_smoke/summary.csv` | results | R180 QA19 full-answer smoke summary |
 | 2026-06-19 07:27 | /experiment-bridge | `../output/babi_unified_token_qa_r180_full_answer_smoke/predictions_sample.csv` | results | R180 QA19 full-answer smoke sample predictions |
-| 2026-06-19 07:36 | /experiment-bridge | `refine-logs/R181_QA19_FULL_ANSWER_BOUNDARY_2026-06-19.md` | report | R181 QA19 full-answer medium boundary report |
 | 2026-06-19 07:36 | /experiment-bridge | `../output/babi_unified_qa19_r181_microproto_medium_fullseq/summary.csv` | results | R181 QA19 microproto medium full-answer summary |
 | 2026-06-19 07:36 | /experiment-bridge | `../output/babi_unified_qa19_r181_role_r174_medium_fullseq/summary.csv` | results | R181 QA19 R174-style role-transition medium full-answer summary |
 | 2026-06-19 07:36 | /analyze-results | `../output/babi_unified_qa19_r181_medium_comparison/comparison_summary.csv` | results | R181 QA19 medium variant comparison summary |
 | 2026-06-19 07:36 | /analyze-results | `../output/babi_unified_qa19_r181_medium_comparison/baseline_summary.csv` | results | R181 QA19 majority and random baseline summary |
 | 2026-06-19 07:51 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R182 default-off answer-slot local prototype readout |
-| 2026-06-19 07:51 | /experiment-bridge | `refine-logs/R182_ANSWER_SLOT_READOUT_2026-06-19.md` | report | R182 answer-slot readout boundary report |
 | 2026-06-19 07:51 | /experiment-bridge | `../output/babi_unified_qa19_r182_aslot_smoke/summary.csv` | results | R182 QA19 answer-slot smoke summary |
 | 2026-06-19 07:51 | /experiment-bridge | `../output/babi_unified_qa19_r182_microproto_aslot_medium_s2/summary.csv` | results | R182 QA19 microproto answer-slot medium summary |
 | 2026-06-19 07:51 | /experiment-bridge | `../output/babi_unified_qa19_r182_role_r174_aslot_medium_s2/summary.csv` | results | R182 QA19 role answer-slot medium summary |
 | 2026-06-19 07:51 | /analyze-results | `../output/babi_unified_qa19_r182_answer_slot_comparison/comparison_summary.csv` | results | R182 QA19 answer-slot comparison summary |
 | 2026-06-19 07:51 | /analyze-results | `../output/babi_unified_qa19_r182_answer_slot_comparison/slot_stats_summary.csv` | results | R182 QA19 answer-slot stats summary |
 | 2026-06-19 08:02 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R183 role-hop answer-slot feature mode |
-| 2026-06-19 08:02 | /experiment-bridge | `refine-logs/R183_ROLE_HOP_ANSWER_SLOT_2026-06-19.md` | report | R183 role-hop answer-slot boundary report |
 | 2026-06-19 08:02 | /experiment-bridge | `../output/babi_unified_qa19_r183_role_hop_aslot_smoke/summary.csv` | results | R183 QA19 role-hop answer-slot smoke summary |
 | 2026-06-19 08:02 | /experiment-bridge | `../output/babi_unified_qa19_r183_role_hop_aslot_medium_s2/summary.csv` | results | R183 QA19 role-hop answer-slot medium summary |
 | 2026-06-19 08:02 | /analyze-results | `../output/babi_unified_qa19_r183_role_hop_comparison/comparison_summary.csv` | results | R183 QA19 role-hop comparison summary |
 | 2026-06-19 08:02 | /analyze-results | `../output/babi_unified_qa19_r183_role_hop_comparison/slot_feature_summary.csv` | results | R183 QA19 role-hop slot feature summary |
 | 2026-06-19 08:12 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R184 parser-free edge-path answer-slot feature mode |
-| 2026-06-19 08:12 | /experiment-bridge | `refine-logs/R184_EDGE_PATH_ANSWER_SLOT_2026-06-19.md` | report | R184 edge-path answer-slot weak-positive boundary report |
 | 2026-06-19 08:12 | /experiment-bridge | `../output/babi_unified_qa19_r184_edge_path_aslot_smoke/summary.csv` | results | R184 QA19 edge-path answer-slot smoke summary |
 | 2026-06-19 08:12 | /experiment-bridge | `../output/babi_unified_qa19_r184_edge_path_aslot_medium_s2/summary.csv` | results | R184 QA19 edge-path answer-slot medium summary |
 | 2026-06-19 08:12 | /analyze-results | `../output/babi_unified_qa19_r184_edge_path_comparison/comparison_summary.csv` | results | R184 QA19 edge-path comparison summary |
 | 2026-06-19 08:12 | /analyze-results | `../output/babi_unified_qa19_r184_edge_path_comparison/slot_feature_summary.csv` | results | R184 QA19 edge-path slot feature summary |
 | 2026-06-19 08:18 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R185 edge-path WTA cleanup feature mode and local cleanup stats |
-| 2026-06-19 08:18 | /experiment-bridge | `refine-logs/R185_EDGE_PATH_WTA_CLEANUP_2026-06-19.md` | report | R185 edge-path WTA cleanup negative boundary report |
 | 2026-06-19 08:18 | /experiment-bridge | `../output/babi_unified_qa19_r185_edge_path_wta_aslot_smoke/summary.csv` | results | R185 QA19 edge-path WTA smoke summary |
 | 2026-06-19 08:18 | /experiment-bridge | `../output/babi_unified_qa19_r185_edge_path_wta_aslot_medium_s2/summary.csv` | results | R185 QA19 learned edge-path WTA medium summary |
 | 2026-06-19 08:18 | /experiment-bridge | `../output/babi_unified_qa19_r185_edge_path_wta_supportonly_medium_s2/summary.csv` | results | R185 QA19 support-only edge-path WTA medium summary |
@@ -1364,7 +1361,6 @@ Use:
 | 2026-06-19 08:18 | /analyze-results | `../output/babi_unified_qa19_r185_edge_path_wta_comparison/comparison_summary.csv` | results | R185 QA19 edge-path WTA comparison summary |
 | 2026-06-19 08:18 | /analyze-results | `../output/babi_unified_qa19_r185_edge_path_wta_comparison/slot_feature_summary.csv` | results | R185 QA19 edge-path WTA cleanup stats summary |
 | 2026-06-19 08:34 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R186 edge-path soft multi-candidate answer-slot feature mode |
-| 2026-06-19 08:34 | /experiment-bridge | `refine-logs/R186_EDGE_PATH_SOFT_MIXTURE_2026-06-19.md` | report | R186 edge-path soft mixture weak-positive report |
 | 2026-06-19 08:34 | /experiment-bridge | `../output/babi_unified_qa19_r186_edge_path_soft_aslot_smoke/summary.csv` | results | R186 QA19 edge-path soft smoke summary |
 | 2026-06-19 08:34 | /experiment-bridge | `../output/babi_unified_qa19_r186_edge_path_soft_aslot_medium_s2/summary.csv` | results | R186 QA19 soft t0.20 consistency0.50 medium summary |
 | 2026-06-19 08:34 | /experiment-bridge | `../output/babi_unified_qa19_r186_edge_path_soft_support_aslot_medium_s2/summary.csv` | results | R186 QA19 soft t0.20 consistency0.00 medium summary |
@@ -1372,7 +1368,6 @@ Use:
 | 2026-06-19 08:34 | /experiment-bridge | `../output/babi_unified_qa19_r186_edge_path_soft_support_temp1_aslot_medium_s2/summary.csv` | results | R186 QA19 soft t1.00 consistency0.00 medium summary |
 | 2026-06-19 08:34 | /analyze-results | `../output/babi_unified_qa19_r186_edge_path_soft_comparison/comparison_summary.csv` | results | R186 QA19 soft edge-path comparison summary |
 | 2026-06-19 08:34 | /analyze-results | `../output/babi_unified_qa19_r186_edge_path_soft_comparison/slot_feature_summary.csv` | results | R186 QA19 soft edge-path slot/cleanup stats summary |
-| 2026-06-19 08:48 | /experiment-bridge | `refine-logs/R187_QA19_SOFT_EDGE_SEED_REPEAT_2026-06-19.md` | report | R187 QA19 soft edge-path three-seed repeat report |
 | 2026-06-19 08:48 | /experiment-bridge | `../output/babi_unified_qa19_r187_r184_edge_path_aslot_medium_s1/summary.csv` | results | R187 QA19 R184 edge-path seed1 paired baseline summary |
 | 2026-06-19 08:48 | /experiment-bridge | `../output/babi_unified_qa19_r187_r184_edge_path_aslot_medium_s2/summary.csv` | results | R187 QA19 R184 edge-path seed2 paired baseline summary |
 | 2026-06-19 08:48 | /experiment-bridge | `../output/babi_unified_qa19_r187_r186_soft_t020_c000_aslot_medium_s1/summary.csv` | results | R187 QA19 R186 soft seed1 summary |
@@ -1380,7 +1375,6 @@ Use:
 | 2026-06-19 08:48 | /analyze-results | `../output/babi_unified_qa19_r187_soft_seed_repeat_comparison/paired_summary.csv` | results | R187 QA19 paired seed summary |
 | 2026-06-19 08:48 | /analyze-results | `../output/babi_unified_qa19_r187_soft_seed_repeat_comparison/aggregate_summary.csv` | results | R187 QA19 three-seed aggregate summary |
 | 2026-06-19 08:48 | /analyze-results | `../output/babi_unified_qa19_r187_soft_seed_repeat_comparison/slot_feature_summary.csv` | results | R187 QA19 seed-repeat slot/cleanup stats summary |
-| 2026-06-19 09:10 | /experiment-bridge | `refine-logs/R188_QA19_SOFT_VALIDATION_SELECTION_2026-06-19.md` | report | R188 QA19 soft edge validation-selection boundary report |
 | 2026-06-19 09:10 | /experiment-bridge | `../output/babi_unified_qa19_r188_soft_t020_c050_aslot_medium_s1/summary.csv` | results | R188 QA19 soft t0.20 consistency0.50 seed1 summary |
 | 2026-06-19 09:10 | /experiment-bridge | `../output/babi_unified_qa19_r188_soft_t020_c050_aslot_medium_s2/summary.csv` | results | R188 QA19 soft t0.20 consistency0.50 seed2 summary |
 | 2026-06-19 09:10 | /experiment-bridge | `../output/babi_unified_qa19_r188_soft_t050_c050_aslot_medium_s1/summary.csv` | results | R188 QA19 soft t0.50 consistency0.50 seed1 summary |
@@ -1391,13 +1385,11 @@ Use:
 | 2026-06-19 09:10 | /analyze-results | `../output/babi_unified_qa19_r188_validation_selected_soft_comparison/baseline_summary.csv` | results | R188 QA19 paired R184 baseline summary |
 | 2026-06-19 09:10 | /analyze-results | `../output/babi_unified_qa19_r188_validation_selected_soft_comparison/selection_summary.csv` | results | R188 QA19 validation-selected per-seed summary |
 | 2026-06-19 09:10 | /analyze-results | `../output/babi_unified_qa19_r188_validation_selected_soft_comparison/aggregate_summary.csv` | results | R188 QA19 validation-selected aggregate summary |
-| 2026-06-19 09:26 | /experiment-bridge | `refine-logs/R189_QA19_FULL_LIMIT_SOFT_EDGE_2026-06-19.md` | report | R189 QA19 full-limit soft edge boundary report |
 | 2026-06-19 09:26 | /experiment-bridge | `../output/babi_unified_qa19_r189_r184_edge_path_full_s0/summary.csv` | results | R189 QA19 full-limit R184 edge-path seed0 summary |
 | 2026-06-19 09:26 | /experiment-bridge | `../output/babi_unified_qa19_r189_r186_soft_t020_c000_full_s0/summary.csv` | results | R189 QA19 full-limit R186 soft edge seed0 summary |
 | 2026-06-19 09:26 | /analyze-results | `../output/babi_unified_qa19_r189_full_limit_comparison/comparison_summary.csv` | results | R189 QA19 full-limit comparison summary |
 | 2026-06-19 09:26 | /analyze-results | `../output/babi_unified_qa19_r189_full_limit_comparison/slot_feature_summary.csv` | results | R189 QA19 full-limit slot/feature summary |
 | 2026-06-19 09:45 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R190 edge-path soft direct score channel |
-| 2026-06-19 09:45 | /experiment-bridge | `refine-logs/R190_QA19_DIRECT_EDGE_SCORE_2026-06-19.md` | report | R190 QA19 direct edge-path score boundary report |
 | 2026-06-19 09:45 | /experiment-bridge | `../output/babi_unified_qa19_r190_edge_path_soft_direct_smoke/summary.csv` | results | R190 QA19 direct edge-path smoke summary |
 | 2026-06-19 09:45 | /experiment-bridge | `../output/babi_unified_qa19_r190_edge_path_soft_direct_medium_s0/summary.csv` | results | R190 QA19 direct edge-path scale1.0 medium summary |
 | 2026-06-19 09:45 | /experiment-bridge | `../output/babi_unified_qa19_r190_edge_path_soft_direct_medium_s0_scale05/summary.csv` | results | R190 QA19 direct edge-path scale0.5 medium summary |
@@ -1405,8 +1397,6 @@ Use:
 | 2026-06-19 09:45 | /analyze-results | `../output/babi_unified_qa19_r190_edge_path_soft_direct_comparison/comparison_summary.csv` | results | R190 QA19 direct edge-path comparison summary |
 | 2026-06-19 10:04 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R191 full prediction export and R192 direct margin gate |
 | 2026-06-19 10:04 | /experiment-bridge | `../babi_prediction_flip_diagnostic.py` | implementation | R191 prediction flip diagnostic utility |
-| 2026-06-19 10:04 | /experiment-bridge | `refine-logs/R191_DIRECT_EDGE_FLIP_DIAGNOSTIC_2026-06-19.md` | report | R191 direct edge-path flip diagnostic report |
-| 2026-06-19 10:04 | /experiment-bridge | `refine-logs/R192_DIRECT_GATE_BOUNDARY_2026-06-19.md` | report | R192 direct margin gate boundary report |
 | 2026-06-19 10:04 | /experiment-bridge | `../output/babi_unified_qa19_r191_r186_soft_fullpred_s0/summary.csv` | results | R191 R186 soft full-prediction rerun summary |
 | 2026-06-19 10:04 | /experiment-bridge | `../output/babi_unified_qa19_r191_r190_direct_s10_fullpred_s0/summary.csv` | results | R191 R190 direct full-prediction rerun summary |
 | 2026-06-19 10:04 | /analyze-results | `../output/babi_unified_qa19_r191_direct_flip_diagnostic/flip_summary.csv` | results | R191 R190-vs-R186 helpful/harmful flip summary |
@@ -1416,7 +1406,6 @@ Use:
 | 2026-06-19 10:04 | /analyze-results | `../output/babi_unified_qa19_r192_gate_vs_r186_flip_diagnostic/flip_summary.csv` | results | R192 gate versus R186 flip summary |
 | 2026-06-19 10:04 | /analyze-results | `../output/babi_unified_qa19_r192_gate_vs_r190_flip_diagnostic/flip_summary.csv` | results | R192 gate versus R190 flip summary |
 | 2026-06-19 10:19 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R193 answer-slot coupling local prototype readout |
-| 2026-06-19 10:19 | /experiment-bridge | `refine-logs/R193_ANSWER_SLOT_COUPLING_2026-06-19.md` | report | R193 answer-slot coupling CE-positive boundary report |
 | 2026-06-19 10:19 | /experiment-bridge | `../output/babi_unified_qa19_r193_slot_coupling_smoke/summary.csv` | results | R193 slot coupling smoke summary |
 | 2026-06-19 10:19 | /experiment-bridge | `../output/babi_unified_qa19_r193_slot_coupling_scale05_medium_s0/summary.csv` | results | R193 slot coupling scale0.5 medium summary |
 | 2026-06-19 10:19 | /experiment-bridge | `../output/babi_unified_qa19_r193_slot_coupling_medium_s0/summary.csv` | results | R193 slot coupling scale1.0 medium summary |
@@ -1427,21 +1416,18 @@ Use:
 | 2026-06-19 10:19 | /analyze-results | `../output/babi_unified_qa19_r193_direct_coupling_vs_r186_flip_diagnostic/flip_summary.csv` | results | R193 direct+coupling versus R186 flip summary |
 | 2026-06-19 10:45 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R194 component-margin prediction logging |
 | 2026-06-19 10:45 | /experiment-bridge | `../babi_component_margin_diagnostic.py` | implementation | R194 component-margin comparison utility |
-| 2026-06-19 10:45 | /experiment-bridge | `refine-logs/R194_QA19_COMPONENT_MARGIN_DIAGNOSTIC_2026-06-19.md` | report | R194 QA19 slot1 component-margin diagnostic report |
 | 2026-06-19 10:45 | /experiment-bridge | `../output/babi_unified_qa19_r194_r186_soft_components_s0_exact/summary.csv` | results | R194 exact R186 soft component rerun summary |
 | 2026-06-19 10:45 | /experiment-bridge | `../output/babi_unified_qa19_r194_r193_coupling_components_s0_exact/summary.csv` | results | R194 exact R193 coupling component rerun summary |
 | 2026-06-19 10:45 | /analyze-results | `../output/babi_unified_qa19_r194_component_margin_diagnostic/component_summary.csv` | results | R194 slot-level component-margin summary |
 | 2026-06-19 10:45 | /analyze-results | `../output/babi_unified_qa19_r194_sequence_flip_diagnostic/flip_summary.csv` | results | R194 R193-vs-R186 full-answer sequence flip summary |
 | 2026-06-19 11:05 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R195 answer-slot wrong-winner cleanup mechanism |
 | 2026-06-19 11:05 | /experiment-bridge | `../babi_component_margin_diagnostic.py` | implementation | R195 cleanup component diagnostic fields |
-| 2026-06-19 11:05 | /experiment-bridge | `refine-logs/R195_QA19_WRONG_CLEANUP_BOUNDARY_2026-06-19.md` | report | R195 QA19 wrong-winner cleanup boundary report |
 | 2026-06-19 11:05 | /experiment-bridge | `../output/babi_unified_qa19_r195_wrong_cleanup_s010_medium_s0/summary.csv` | results | R195 cleanup scale0.10 medium summary |
 | 2026-06-19 11:05 | /experiment-bridge | `../output/babi_unified_qa19_r195_wrong_cleanup_s025_medium_s0/summary.csv` | results | R195 cleanup scale0.25 medium summary |
 | 2026-06-19 11:05 | /experiment-bridge | `../output/babi_unified_qa19_r195_wrong_cleanup_s050_medium_s0/summary.csv` | results | R195 cleanup scale0.50 medium summary |
 | 2026-06-19 11:05 | /analyze-results | `../output/babi_unified_qa19_r195_wrong_cleanup_comparison/comparison_summary.csv` | results | R195 cleanup comparison summary |
 | 2026-06-19 11:05 | /analyze-results | `../output/babi_unified_qa19_r195_s010_component_diagnostic/component_summary.csv` | results | R195 cleanup scale0.10 component diagnostic summary |
 | 2026-06-19 11:25 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R196 evidence-protected wrong-cleanup gate |
-| 2026-06-19 11:25 | /experiment-bridge | `refine-logs/R196_EVIDENCE_PROTECTED_CLEANUP_2026-06-19.md` | report | R196 QA19 evidence-protected cleanup boundary report |
 | 2026-06-19 11:25 | /experiment-bridge | `../output/babi_unified_qa19_r196_protected_cleanup_t050_medium_s0/summary.csv` | results | R196 protected cleanup threshold0.5 medium summary |
 | 2026-06-19 11:25 | /experiment-bridge | `../output/babi_unified_qa19_r196_protected_cleanup_t100_medium_s0/summary.csv` | results | R196 protected cleanup threshold1.0 medium summary |
 | 2026-06-19 11:25 | /experiment-bridge | `../output/babi_unified_qa19_r196_protected_cleanup_t200_medium_s0/summary.csv` | results | R196 protected cleanup threshold2.0 medium summary |
@@ -1449,7 +1435,6 @@ Use:
 | 2026-06-19 11:25 | /analyze-results | `../output/babi_unified_qa19_r196_t200_component_diagnostic/component_summary.csv` | results | R196 threshold2.0 component diagnostic summary |
 | 2026-06-19 11:46 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R197 ordered-pair conflict-local rescue mechanism |
 | 2026-06-19 11:46 | /experiment-bridge | `../babi_component_margin_diagnostic.py` | implementation | R197 conflict-rescue component diagnostic fields |
-| 2026-06-19 11:46 | /experiment-bridge | `refine-logs/R197_CONFLICT_LOCAL_RESCUE_2026-06-19.md` | report | R197 QA19 conflict-local rescue boundary report |
 | 2026-06-19 11:46 | /experiment-bridge | `../output/babi_unified_qa19_r197_conflict_rescue_smoke/summary.csv` | results | R197 conflict rescue smoke summary |
 | 2026-06-19 11:46 | /experiment-bridge | `../output/babi_unified_qa19_r197_conflict_rescue_s010_medium_s0/summary.csv` | results | R197 conflict rescue scale0.10 medium summary |
 | 2026-06-19 11:46 | /experiment-bridge | `../output/babi_unified_qa19_r197_conflict_rescue_s025_medium_s0/summary.csv` | results | R197 conflict rescue scale0.25 medium summary |
@@ -1461,7 +1446,6 @@ Use:
 | 2026-06-19 11:46 | /analyze-results | `../output/babi_unified_qa19_r197_s050_vs_r193_flip_diagnostic/flip_summary.csv` | results | R197 scale0.50 versus R193 full-answer flip summary |
 | 2026-06-19 11:46 | /analyze-results | `../output/babi_unified_qa19_r197_s025_component_diagnostic/component_summary.csv` | results | R197 scale0.25 slot-level component-margin summary |
 | 2026-06-19 12:41 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R198 conflict-rescue prefix-consistency gate |
-| 2026-06-19 12:41 | /experiment-bridge | `refine-logs/R198_PREFIX_CONSISTENCY_GATE_2026-06-19.md` | report | R198 QA19 prefix-consistency gate boundary report |
 | 2026-06-19 12:41 | /experiment-bridge | `../output/babi_unified_qa19_r198_prefix_gate_smoke/summary.csv` | results | R198 prefix gate smoke summary |
 | 2026-06-19 12:41 | /experiment-bridge | `../output/babi_unified_qa19_r198_prefix_gate_obspred_s025_medium_s0/summary.csv` | results | R198 observed_pred prefix gate medium summary |
 | 2026-06-19 12:41 | /experiment-bridge | `../output/babi_unified_qa19_r198_prefix_gate_obspred_m005_s025_medium_s0/summary.csv` | results | R198 observed_pred_margin0.05 prefix gate medium summary |
@@ -1474,3 +1458,453 @@ Use:
 | 2026-06-19 12:41 | /analyze-results | `../output/babi_unified_qa19_r198_margin005_vs_r193_flip_diagnostic/flip_summary.csv` | results | R198 margin0.05 versus R193 flip summary |
 | 2026-06-19 12:41 | /analyze-results | `../output/babi_unified_qa19_r198_margin020_vs_r193_flip_diagnostic/flip_summary.csv` | results | R198 margin0.20 versus R193 flip summary |
 | 2026-06-19 12:41 | /analyze-results | `../output/babi_unified_qa19_r198_margin020_vs_r197_s025_flip_diagnostic/flip_summary.csv` | results | R198 margin0.20 versus R197 s0.25 flip summary |
+| 2026-06-19 12:57 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R199 predicted-prefix eligibility training path |
+| 2026-06-19 12:57 | /experiment-bridge | `../output/babi_unified_qa19_r199_predprefix_conflict_smoke/summary.csv` | results | R199 predicted-prefix conflict smoke summary |
+| 2026-06-19 12:57 | /experiment-bridge | `../output/babi_unified_qa19_r199_predprefix_conflict_s025_medium_s0/summary.csv` | results | R199 predicted-prefix conflict scale0.25 medium summary |
+| 2026-06-19 12:57 | /experiment-bridge | `../output/babi_unified_qa19_r199_predprefix_coupling_conflict_s025_medium_s0/summary.csv` | results | R199 predicted-prefix coupling+conflict scale0.25 medium summary |
+| 2026-06-19 12:57 | /experiment-bridge | `../output/babi_unified_qa19_r199_predprefix_coupling_conflict_s010_medium_s0/summary.csv` | results | R199 predicted-prefix coupling+conflict scale0.10 medium summary |
+| 2026-06-19 12:57 | /analyze-results | `../output/babi_unified_qa19_r199_predprefix_comparison/comparison_summary.csv` | results | R199 predicted-prefix comparison summary |
+| 2026-06-19 12:57 | /analyze-results | `../output/babi_unified_qa19_r199_predprefix_comparison/predprefix_stats_summary.csv` | results | R199 predicted-prefix stats summary |
+| 2026-06-19 12:57 | /analyze-results | `../output/babi_unified_qa19_r199_pp_conflict_s025_vs_r193_flip_diagnostic/flip_summary.csv` | results | R199 predicted-prefix conflict scale0.25 versus R193 flip summary |
+| 2026-06-19 12:57 | /analyze-results | `../output/babi_unified_qa19_r199_pp_coupling_conflict_s025_vs_r193_flip_diagnostic/flip_summary.csv` | results | R199 predicted-prefix coupling+conflict scale0.25 versus R193 flip summary |
+| 2026-06-19 12:57 | /analyze-results | `../output/babi_unified_qa19_r199_pp_coupling_conflict_s010_vs_r193_flip_diagnostic/flip_summary.csv` | results | R199 predicted-prefix coupling+conflict scale0.10 versus R193 flip summary |
+| 2026-06-19 12:57 | /analyze-results | `../output/babi_unified_qa19_r199_pp_coupling_conflict_s010_vs_r197_s010_flip_diagnostic/flip_summary.csv` | results | R199 predicted-prefix coupling+conflict scale0.10 versus R197 s0.10 flip summary |
+| 2026-06-19 13:22 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R200 predicted-prefix target top-k gate and local learning-rate scale |
+| 2026-06-19 13:22 | /experiment-bridge | `../output/babi_unified_qa19_r200_predprefix_topk4_lr025_smoke/summary.csv` | results | R200 top4 lr0.25 smoke summary |
+| 2026-06-19 13:22 | /experiment-bridge | `../output/babi_unified_qa19_r200_predprefix_top1_s010_medium_s0/summary.csv` | results | R200 predicted-prefix top1 medium summary |
+| 2026-06-19 13:22 | /experiment-bridge | `../output/babi_unified_qa19_r200_predprefix_top2_s010_medium_s0/summary.csv` | results | R200 predicted-prefix top2 medium summary |
+| 2026-06-19 13:22 | /experiment-bridge | `../output/babi_unified_qa19_r200_predprefix_topk4_s010_medium_s0/summary.csv` | results | R200 predicted-prefix top4 medium summary |
+| 2026-06-19 13:22 | /experiment-bridge | `../output/babi_unified_qa19_r200_predprefix_lr025_s010_medium_s0/summary.csv` | results | R200 predicted-prefix lr0.25 medium summary |
+| 2026-06-19 13:22 | /experiment-bridge | `../output/babi_unified_qa19_r200_predprefix_topk4_lr025_s010_medium_s0/summary.csv` | results | R200 predicted-prefix top4 lr0.25 medium summary |
+| 2026-06-19 13:22 | /analyze-results | `../output/babi_unified_qa19_r200_top1_vs_r193_flip_diagnostic/flip_summary.csv` | results | R200 top1 versus R193 full-answer flip summary |
+| 2026-06-19 13:22 | /analyze-results | `../output/babi_unified_qa19_r200_top2_vs_r193_flip_diagnostic/flip_summary.csv` | results | R200 top2 versus R193 full-answer flip summary |
+| 2026-06-19 13:22 | /analyze-results | `../output/babi_unified_qa19_r200_top1_vs_r199_flip_diagnostic/flip_summary.csv` | results | R200 top1 versus R199 full-answer flip summary |
+| 2026-06-19 13:22 | /analyze-results | `../output/babi_unified_qa19_r200_top2_vs_r199_flip_diagnostic/flip_summary.csv` | results | R200 top2 versus R199 full-answer flip summary |
+| 2026-06-19 13:31 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R201 decoupled predicted-prefix coupling wrong-credit switch |
+| 2026-06-19 13:31 | /experiment-bridge | `../output/babi_unified_qa19_r201_targetonly_cc_smoke/summary.csv` | results | R201 target-only coupling+conflict smoke summary |
+| 2026-06-19 13:31 | /experiment-bridge | `../output/babi_unified_qa19_r201_pp_coupling_s010_medium_s0/summary.csv` | results | R201 predicted-prefix coupling medium summary |
+| 2026-06-19 13:31 | /experiment-bridge | `../output/babi_unified_qa19_r201_pp_coupling_targetonly_s010_medium_s0/summary.csv` | results | R201 predicted-prefix coupling target-only medium summary |
+| 2026-06-19 13:31 | /experiment-bridge | `../output/babi_unified_qa19_r201_pp_coupling_conflict_targetonly_s010_medium_s0/summary.csv` | results | R201 predicted-prefix coupling+conflict target-only medium summary |
+| 2026-06-19 13:31 | /analyze-results | `../output/babi_unified_qa19_r201_coupling_targetonly_vs_r193_flip_diagnostic/flip_summary.csv` | results | R201 coupling target-only versus R193 full-answer flip summary |
+| 2026-06-19 13:31 | /analyze-results | `../output/babi_unified_qa19_r201_coupling_targetonly_vs_r199_flip_diagnostic/flip_summary.csv` | results | R201 coupling target-only versus R199 full-answer flip summary |
+| 2026-06-19 13:31 | /analyze-results | `../output/babi_unified_qa19_r201_coupling_vs_r193_flip_diagnostic/flip_summary.csv` | results | R201 coupling versus R193 full-answer flip summary |
+| 2026-06-19 13:31 | /analyze-results | `../output/babi_unified_qa19_r201_coupling_vs_r199_flip_diagnostic/flip_summary.csv` | results | R201 coupling versus R199 full-answer flip summary |
+| 2026-06-19 13:40 | /experiment-bridge | `../output/babi_unified_qa19_r193_slot_coupling_medium_s1/summary.csv` | results | R202 R193 seed1 medium summary |
+| 2026-06-19 13:40 | /experiment-bridge | `../output/babi_unified_qa19_r193_slot_coupling_medium_s2/summary.csv` | results | R202 R193 seed2 medium summary |
+| 2026-06-19 13:40 | /experiment-bridge | `../output/babi_unified_qa19_r199_predprefix_coupling_conflict_s010_medium_s1/summary.csv` | results | R202 R199 seed1 medium summary |
+| 2026-06-19 13:40 | /experiment-bridge | `../output/babi_unified_qa19_r199_predprefix_coupling_conflict_s010_medium_s2/summary.csv` | results | R202 R199 seed2 medium summary |
+| 2026-06-19 13:40 | /experiment-bridge | `../output/babi_unified_qa19_r201_pp_coupling_targetonly_s010_medium_s1/summary.csv` | results | R202 R201 target-only seed1 medium summary |
+| 2026-06-19 13:40 | /experiment-bridge | `../output/babi_unified_qa19_r201_pp_coupling_targetonly_s010_medium_s2/summary.csv` | results | R202 R201 target-only seed2 medium summary |
+| 2026-06-19 13:48 | /experiment-bridge | `../babi_slot1_error_source_diagnostic.py` | implementation | R203 QA19 slot1 error-source diagnostic script |
+| 2026-06-19 13:48 | /experiment-bridge | `../output/babi_unified_qa19_r203_r193_components_s0/prediction_components.csv` | results | R203 R193 component-margin rerun rows |
+| 2026-06-19 13:48 | /experiment-bridge | `../output/babi_unified_qa19_r203_r199_components_s0/prediction_components.csv` | results | R203 R199 component-margin rerun rows |
+| 2026-06-19 13:48 | /experiment-bridge | `../output/babi_unified_qa19_r203_r201_targetonly_components_s0/prediction_components.csv` | results | R203 R201 target-only component-margin rerun rows |
+| 2026-06-19 13:48 | /analyze-results | `../output/babi_unified_qa19_r203_r193_slot1_error_source_s0/slot1_error_summary.csv` | results | R203 R193 slot1 error-source summary |
+| 2026-06-19 13:48 | /analyze-results | `../output/babi_unified_qa19_r203_r199_slot1_error_source_s0/slot1_error_summary.csv` | results | R203 R199 slot1 error-source summary |
+| 2026-06-19 13:48 | /analyze-results | `../output/babi_unified_qa19_r203_r201_targetonly_slot1_error_source_s0/slot1_error_summary.csv` | results | R203 R201 target-only slot1 error-source summary |
+| 2026-06-19 13:53 | /experiment-bridge | `../babi_slot0_path_source_diagnostic.py` | implementation | R204 QA19 slot0 path-source diagnostic script |
+| 2026-06-19 13:53 | /analyze-results | `../output/babi_unified_qa19_r204_r193_slot0_path_source_s0/slot0_path_summary.csv` | results | R204 R193 slot0 path-source summary |
+| 2026-06-19 13:53 | /analyze-results | `../output/babi_unified_qa19_r204_r199_slot0_path_source_s0/slot0_path_summary.csv` | results | R204 R199 slot0 path-source summary |
+| 2026-06-19 13:53 | /analyze-results | `../output/babi_unified_qa19_r204_r201_targetonly_slot0_path_source_s0/slot0_path_summary.csv` | results | R204 R201 target-only slot0 path-source summary |
+| 2026-06-19 14:06 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R205 slot0 conflict-rescue feature fallback for min-slot0 |
+| 2026-06-19 14:06 | /experiment-bridge | `../output/babi_unified_qa19_r205_slot0_conflict_rescue_smoke/summary.csv` | results | R205 slot0 conflict rescue smoke summary |
+| 2026-06-19 14:06 | /experiment-bridge | `../output/babi_unified_qa19_r205_slot0_conflict_s005_medium_s0/summary.csv` | results | R205 slot0 conflict scale0.05 medium summary |
+| 2026-06-19 14:06 | /experiment-bridge | `../output/babi_unified_qa19_r205_slot0_conflict_s010_medium_s0/summary.csv` | results | R205 slot0 conflict scale0.10 medium summary |
+| 2026-06-19 14:06 | /experiment-bridge | `../output/babi_unified_qa19_r205_slot0_conflict_s025_medium_s0/summary.csv` | results | R205 slot0 conflict scale0.25 seed0 medium summary |
+| 2026-06-19 14:06 | /experiment-bridge | `../output/babi_unified_qa19_r205_slot0_conflict_s025_medium_s1/summary.csv` | results | R205 slot0 conflict scale0.25 seed1 medium summary |
+| 2026-06-19 14:06 | /experiment-bridge | `../output/babi_unified_qa19_r205_slot0_conflict_s025_medium_s2/summary.csv` | results | R205 slot0 conflict scale0.25 seed2 medium summary |
+| 2026-06-19 14:06 | /analyze-results | `../output/babi_unified_qa19_r205_s025_vs_r193_flip_diagnostic/flip_summary.csv` | results | R205 scale0.25 versus R193 flip summary |
+| 2026-06-19 14:06 | /experiment-bridge | `../output/babi_unified_qa19_r205_slot0_conflict_s025_components_s0/prediction_components.csv` | results | R205 scale0.25 component-margin rows |
+| 2026-06-19 14:06 | /analyze-results | `../output/babi_unified_qa19_r205_s025_slot0_path_source_s0/slot0_path_summary.csv` | results | R205 scale0.25 slot0 path-source summary |
+| 2026-06-19 14:06 | /analyze-results | `../output/babi_unified_qa19_r205_s025_slot1_error_source_s0/slot1_error_summary.csv` | results | R205 scale0.25 slot1 error-source summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R206 conflict-rescue positive-support safety gate |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support010_smoke/summary.csv` | results | R206 support0.10 smoke summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support050_smoke/summary.csv` | results | R206 support0.50 smoke summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support100_smoke/summary.csv` | results | R206 support1.00 smoke summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support150_smoke/summary.csv` | results | R206 support1.50 smoke summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support200_smoke/summary.csv` | results | R206 support2.00 smoke summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support100_medium_s0/summary.csv` | results | R206 support1.00 medium seed0 summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support150_medium_s0/summary.csv` | results | R206 support1.50 medium seed0 summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support200_medium_s0/summary.csv` | results | R206 support2.00 medium seed0 summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support200_medium_s1/summary.csv` | results | R206 support2.00 medium seed1 summary |
+| 2026-06-19 14:36 | /experiment-bridge | `../output/babi_unified_qa19_r206_support200_medium_s2/summary.csv` | results | R206 support2.00 medium seed2 summary |
+| 2026-06-19 14:36 | /analyze-results | `../output/babi_unified_qa19_r206_sup2_vs_r193_flip_diagnostic/flip_summary.csv` | results | R206 support2.00 versus R193 flip summary |
+| 2026-06-19 14:36 | /analyze-results | `../output/babi_unified_qa19_r206_sup2_vs_r205_flip_diagnostic/flip_summary.csv` | results | R206 support2.00 versus R205 flip summary |
+| 2026-06-19 14:36 | /analyze-results | `../output/babi_unified_qa19_r206_sup15_vs_r193_flip_diagnostic/flip_summary.csv` | results | R206 support1.50 versus R193 flip summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain105_smoke/summary.csv` | results | R207 gain1.05 smoke summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain110_smoke/summary.csv` | results | R207 gain1.10 smoke summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain115_smoke/summary.csv` | results | R207 gain1.15 smoke summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain120_smoke/summary.csv` | results | R207 gain1.20 smoke summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain125_smoke/summary.csv` | results | R207 gain1.25 smoke summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain120_medium_s0/summary.csv` | results | R207 gain1.20 medium seed0 summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain120_medium_s1/summary.csv` | results | R207 gain1.20 medium seed1 summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain120_medium_s2/summary.csv` | results | R207 gain1.20 medium seed2 summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain125_medium_s0/summary.csv` | results | R207 gain1.25 medium seed0 summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain125_medium_s1/summary.csv` | results | R207 gain1.25 medium seed1 summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain125_medium_s2/summary.csv` | results | R207 gain1.25 medium seed2 summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain130_medium_s0/summary.csv` | results | R207 gain1.30 medium seed0 summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain130_medium_s1/summary.csv` | results | R207 gain1.30 medium seed1 summary |
+| 2026-06-19 15:18 | /experiment-bridge | `../output/phase_binding_online_stream_r207_gain130_medium_s2/summary.csv` | results | R207 gain1.30 medium seed2 summary |
+| 2026-06-19 15:43 | /experiment-bridge | `../output/phase_binding_online_stream_r208_local_gain_s010_lr002_smoke/summary.csv` | results | R208 local gain strength0.10 lr0.002 smoke summary |
+| 2026-06-19 15:43 | /experiment-bridge | `../output/phase_binding_online_stream_r208_local_gain_s020_lr002_smoke/summary.csv` | results | R208 local gain strength0.20 lr0.002 smoke summary |
+| 2026-06-19 15:43 | /experiment-bridge | `../output/phase_binding_online_stream_r208_local_gain_s010_lr005_smoke/summary.csv` | results | R208 local gain strength0.10 lr0.005 smoke summary |
+| 2026-06-19 15:43 | /experiment-bridge | `../output/phase_binding_online_stream_r208_local_gain_s010_lr002_marg_smoke/summary.csv` | results | R208 local gain margin-protected smoke summary |
+| 2026-06-19 15:43 | /experiment-bridge | `../output/phase_binding_online_stream_r208_margin_gain_c05_smoke/summary.csv` | results | R208 margin gain center0.5 smoke summary |
+| 2026-06-19 15:43 | /experiment-bridge | `../output/phase_binding_online_stream_r208_margin_gain_c10_smoke/summary.csv` | results | R208 margin gain center1.0 smoke summary |
+| 2026-06-19 15:43 | /experiment-bridge | `../output/phase_binding_online_stream_r208_margin_gain_c15_smoke/summary.csv` | results | R208 margin gain center1.5 smoke summary |
+| 2026-06-19 15:43 | /experiment-bridge | `../output/phase_binding_online_stream_r208_margin_gain_g130_c10_smoke/summary.csv` | results | R208 margin gain1.30 center1.0 smoke summary |
+| 2026-06-19 14:56 | /experiment-bridge | `../phase_binding_online_stream_experiment.py` | implementation | R209 CE-mode local readout gain update switch |
+| 2026-06-19 14:56 | /experiment-bridge | `../output/phase_binding_online_stream_r209_ce_gain_bg120_s010_lr0002_clip10_smoke/summary.csv` | results | R209 CE local gain bg1.20 s0.10 lr0.002 smoke summary |
+| 2026-06-19 14:56 | /experiment-bridge | `../output/phase_binding_online_stream_r209_ce_gain_bg120_s020_lr0002_clip10_smoke/summary.csv` | results | R209 CE local gain bg1.20 s0.20 lr0.002 smoke summary |
+| 2026-06-19 14:56 | /experiment-bridge | `../output/phase_binding_online_stream_r209_ce_gain_bg120_s010_lr0005_clip05_smoke/summary.csv` | results | R209 CE local gain bg1.20 s0.10 lr0.005 clip0.5 smoke summary |
+| 2026-06-19 14:56 | /experiment-bridge | `../output/phase_binding_online_stream_r209_ce_gain_bg115_s020_lr0002_clip10_smoke/summary.csv` | results | R209 CE local gain bg1.15 s0.20 lr0.002 smoke summary |
+| 2026-06-19 14:56 | /experiment-bridge | `../output/phase_binding_online_stream_r209_ce_gain_bg120_s035_lr0010_clip10_smoke/summary.csv` | results | R209 CE local gain bg1.20 s0.35 lr0.010 smoke summary |
+| 2026-06-19 14:56 | /experiment-bridge | `../output/phase_binding_online_stream_r209_ce_gain_bg120_s050_lr0005_clip10_smoke/summary.csv` | results | R209 CE local gain bg1.20 s0.50 lr0.005 smoke summary |
+| 2026-06-19 14:56 | /experiment-bridge | `../output/phase_binding_online_stream_r209_ce_gain_bg120_s035_lr0010_clip10_medium_s0/summary.csv` | results | R209 CE local gain best-smoke medium seed0 summary |
+| 2026-06-19 15:07 | /experiment-bridge | `../phase_binding_online_stream_experiment.py` | implementation | R210 dynamic local gain scope and retention reset evaluation switch |
+| 2026-06-19 15:07 | /experiment-bridge | `../output/phase_binding_online_stream_r210_fixed_gain120_retreset_smoke/summary.csv` | results | R210 fixed gain1.20 reset-retention smoke summary |
+| 2026-06-19 15:07 | /experiment-bridge | `../output/phase_binding_online_stream_r210_ce_gain_persist_bg120_s035_lr0010_retreset_smoke/summary.csv` | results | R210 persistent CE local gain bg1.20 reset-retention smoke summary |
+| 2026-06-19 15:07 | /experiment-bridge | `../output/phase_binding_online_stream_r210_ce_gain_dynamic_bg120_s035_lr0010_retreset_smoke/summary.csv` | results | R210 dynamic CE local gain bg1.20 reset-retention smoke summary |
+| 2026-06-19 15:07 | /experiment-bridge | `../output/phase_binding_online_stream_r210_ce_gain_dynamic_bg115_s050_lr0010_retreset_smoke/summary.csv` | results | R210 dynamic CE local gain bg1.15 s0.50 lr0.010 smoke summary |
+| 2026-06-19 15:07 | /experiment-bridge | `../output/phase_binding_online_stream_r210_ce_gain_dynamic_bg115_s075_lr0010_retreset_smoke/summary.csv` | results | R210 dynamic CE local gain bg1.15 s0.75 lr0.010 smoke summary |
+| 2026-06-19 15:07 | /experiment-bridge | `../output/phase_binding_online_stream_r210_ce_gain_dynamic_bg115_s050_lr0020_retreset_smoke/summary.csv` | results | R210 dynamic CE local gain bg1.15 s0.50 lr0.020 smoke summary |
+| 2026-06-19 15:07 | /experiment-bridge | `../output/phase_binding_online_stream_r210_fixed_gain120_retreset_medium_s0/summary.csv` | results | R210 fixed gain1.20 reset-retention medium seed0 summary |
+| 2026-06-19 15:07 | /experiment-bridge | `../output/phase_binding_online_stream_r210_ce_gain_dynamic_bg120_s035_lr0010_retreset_medium_s0/summary.csv` | results | R210 dynamic CE local gain bg1.20 reset-retention medium seed0 summary |
+| 2026-06-19 15:19 | /experiment-bridge | `../phase_binding_online_stream_experiment.py` | implementation | R211 transient feature calibration wrapper and feature calibration dynamic scope |
+| 2026-06-19 15:19 | /experiment-bridge | `../output/phase_binding_online_stream_r211_transfeat_s010_lr0005_d32_retreset_smoke/summary.csv` | results | R211 transient feature calibration strength0.10 lr0.005 smoke summary |
+| 2026-06-19 15:19 | /experiment-bridge | `../output/phase_binding_online_stream_r211_transfeat_s025_lr0005_d32_retreset_smoke/summary.csv` | results | R211 transient feature calibration strength0.25 lr0.005 smoke summary |
+| 2026-06-19 15:19 | /experiment-bridge | `../output/phase_binding_online_stream_r211_transfeat_s025_lr0010_d32_retreset_smoke/summary.csv` | results | R211 transient feature calibration strength0.25 lr0.010 smoke summary |
+| 2026-06-19 15:19 | /experiment-bridge | `../output/phase_binding_online_stream_r211_transfeat_s050_lr0005_d32_retreset_smoke/summary.csv` | results | R211 transient feature calibration strength0.50 lr0.005 smoke summary |
+| 2026-06-19 15:19 | /experiment-bridge | `../output/phase_binding_online_stream_r211_transfeat_s025_lr0010_d32_retreset_medium_s0/summary.csv` | results | R211 transient feature calibration medium seed0 summary |
+| 2026-06-19 15:19 | /experiment-bridge | `../output/phase_binding_online_stream_r211_transfeat_s025_lr0010_d32_retreset_medium_s1/summary.csv` | results | R211 transient feature calibration medium seed1 summary |
+| 2026-06-19 15:19 | /experiment-bridge | `../output/phase_binding_online_stream_r211_transfeat_s025_lr0010_d32_retreset_medium_s2/summary.csv` | results | R211 transient feature calibration medium seed2 summary |
+| 2026-06-19 15:25 | /experiment-bridge | `../phase_binding_online_stream_experiment.py` | implementation | R212 top-k and near-miss controls for transient feature calibration |
+| 2026-06-19 15:25 | /experiment-bridge | `../output/phase_binding_online_stream_r212_transfeat_s025_lr0010_score16_update8_retreset_smoke/summary.csv` | results | R212 transient feature calibration score16 update8 smoke summary |
+| 2026-06-19 15:25 | /experiment-bridge | `../output/phase_binding_online_stream_r212_transfeat_s025_lr0010_score8_update4_retreset_smoke/summary.csv` | results | R212 transient feature calibration score8 update4 smoke summary |
+| 2026-06-19 15:25 | /experiment-bridge | `../output/phase_binding_online_stream_r212_transfeat_s025_lr0010_score32_update16_retreset_smoke/summary.csv` | results | R212 transient feature calibration score32 update16 smoke summary |
+| 2026-06-19 15:25 | /experiment-bridge | `../output/phase_binding_online_stream_r212_transfeat_s025_lr0010_score16_update8_margin05_retreset_smoke/summary.csv` | results | R212 transient feature calibration score16 update8 margin0.5 smoke summary |
+| 2026-06-19 15:31 | /experiment-bridge | `../phase_binding_online_stream_experiment.py` | implementation | R213 soft rank and margin weighting controls for transient feature calibration |
+| 2026-06-19 15:31 | /experiment-bridge | `../output/phase_binding_online_stream_r213_transfeat_s025_lr0010_ranktau8_retreset_smoke/summary.csv` | results | R213 transient feature calibration rank tau8 smoke summary |
+| 2026-06-19 15:31 | /experiment-bridge | `../output/phase_binding_online_stream_r213_transfeat_s025_lr0010_ranktau16_retreset_smoke/summary.csv` | results | R213 transient feature calibration rank tau16 smoke summary |
+| 2026-06-19 15:31 | /experiment-bridge | `../output/phase_binding_online_stream_r213_transfeat_s025_lr0010_margintau1_retreset_smoke/summary.csv` | results | R213 transient feature calibration margin tau1 smoke summary |
+| 2026-06-19 15:31 | /experiment-bridge | `../output/phase_binding_online_stream_r213_transfeat_s025_lr0010_ranktau16_margintau2_retreset_smoke/summary.csv` | results | R213 transient feature calibration rank tau16 margin tau2 smoke summary |
+| 2026-06-19 15:42 | /experiment-bridge | `../phase_binding_online_stream_experiment.py` | implementation | R214 transient wrong-winner-only inhibition wrapper |
+| 2026-06-19 15:42 | /experiment-bridge | `../output/phase_binding_online_stream_r214_transfeat_wininhib_s010_lr0005_retreset_smoke/summary.csv` | results | R214 transient winner inhibition strength0.10 lr0.005 smoke summary |
+| 2026-06-19 15:42 | /experiment-bridge | `../output/phase_binding_online_stream_r214_transfeat_wininhib_s025_lr0005_retreset_smoke/summary.csv` | results | R214 transient winner inhibition strength0.25 lr0.005 smoke summary |
+| 2026-06-19 15:42 | /experiment-bridge | `../output/phase_binding_online_stream_r214_transfeat_wininhib_s025_lr0010_retreset_smoke/summary.csv` | results | R214 transient winner inhibition strength0.25 lr0.010 smoke summary |
+| 2026-06-19 15:42 | /experiment-bridge | `../output/phase_binding_online_stream_r214_transfeat_wininhib_s050_lr0005_retreset_smoke/summary.csv` | results | R214 transient winner inhibition strength0.50 lr0.005 smoke summary |
+| 2026-06-19 15:42 | /experiment-bridge | `../output/phase_binding_online_stream_r214_transfeat_wininhib_s025_lr0010_retreset_medium_s0/summary.csv` | results | R214 transient winner inhibition strength0.25 lr0.010 medium seed0 summary |
+| 2026-06-19 15:42 | /experiment-bridge | `../output/phase_binding_online_stream_r214_transfeat_wininhib_s025_lr0005_retreset_medium_s0/summary.csv` | results | R214 transient winner inhibition strength0.25 lr0.005 medium seed0 summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay099_s025_lr0005_retreset_smoke/summary.csv` | results | R215 winner inhibition decay0.99 lr0.005 smoke summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay095_s025_lr0005_retreset_smoke/summary.csv` | results | R215 winner inhibition decay0.95 lr0.005 smoke summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay090_s025_lr0005_retreset_smoke/summary.csv` | results | R215 winner inhibition decay0.90 lr0.005 smoke summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay0999_s025_lr0005_retreset_smoke/summary.csv` | results | R215 winner inhibition decay0.999 lr0.005 smoke summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay09995_s025_lr0005_retreset_smoke/summary.csv` | results | R215 winner inhibition decay0.9995 lr0.005 smoke summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay0999_s025_lr0010_retreset_smoke/summary.csv` | results | R215 winner inhibition decay0.999 lr0.010 smoke summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay09995_s025_lr0010_retreset_smoke/summary.csv` | results | R215 winner inhibition decay0.9995 lr0.010 smoke summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay0999_s025_lr0010_retreset_medium_s0/summary.csv` | results | R215 winner inhibition decay0.999 lr0.010 medium seed0 summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay0999_s025_lr0010_retreset_medium_s1/summary.csv` | results | R215 winner inhibition decay0.999 lr0.010 medium seed1 summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay0999_s025_lr0010_retreset_medium_s2/summary.csv` | results | R215 winner inhibition decay0.999 lr0.010 medium seed2 summary |
+| 2026-06-19 15:58 | /experiment-bridge | `../output/phase_binding_online_stream_r215_transfeat_wininhib_decay09995_s025_lr0010_retreset_medium_s0/summary.csv` | results | R215 winner inhibition decay0.9995 lr0.010 medium seed0 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R216 role branch arbiter repeated-evidence min-count safety gate |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa18_smoke_conflict_proto_mc2/summary.csv` | results | R216 QA18 smoke conflict_proto min-count2 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa14_medium_conflict_proto_mc2/summary.csv` | results | R216 QA14 medium conflict_proto min-count2 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa17_medium_conflict_proto_mc2/summary.csv` | results | R216 QA17 medium conflict_proto min-count2 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa18_medium_conflict_proto_mc2/summary.csv` | results | R216 QA18 medium conflict_proto min-count2 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa14_medium_conflict_proto_mc4/summary.csv` | results | R216 QA14 medium conflict_proto min-count4 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa17_medium_conflict_proto_mc4/summary.csv` | results | R216 QA17 medium conflict_proto min-count4 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa18_medium_conflict_proto_mc4/summary.csv` | results | R216 QA18 medium conflict_proto min-count4 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa14_medium_conflict_proto_mc8/summary.csv` | results | R216 QA14 medium conflict_proto min-count8 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa17_medium_conflict_proto_mc8/summary.csv` | results | R216 QA17 medium conflict_proto min-count8 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa18_medium_conflict_proto_mc8/summary.csv` | results | R216 QA18 medium conflict_proto min-count8 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa14_medium_conflict_proto_mc16/summary.csv` | results | R216 QA14 medium conflict_proto min-count16 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa17_medium_conflict_proto_mc16/summary.csv` | results | R216 QA17 medium conflict_proto min-count16 summary |
+| 2026-06-19 16:14 | /experiment-bridge | `../output/babi_unified_role_transition_r216_qa18_medium_conflict_proto_mc16/summary.csv` | results | R216 QA18 medium conflict_proto min-count16 summary |
+| 2026-06-19 16:21 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R217 rich local conflict features for branch arbiter |
+| 2026-06-19 16:21 | /experiment-bridge | `../output/babi_unified_role_transition_r217_qa18_smoke_conflict_proto_rich/summary.csv` | results | R217 QA18 smoke conflict_proto rich summary |
+| 2026-06-19 16:21 | /experiment-bridge | `../output/babi_unified_role_transition_r217_qa14_medium_conflict_proto_rich/summary.csv` | results | R217 QA14 medium conflict_proto rich summary |
+| 2026-06-19 16:21 | /experiment-bridge | `../output/babi_unified_role_transition_r217_qa17_medium_conflict_proto_rich/summary.csv` | results | R217 QA17 medium conflict_proto rich summary |
+| 2026-06-19 16:21 | /experiment-bridge | `../output/babi_unified_role_transition_r217_qa18_medium_conflict_proto_rich/summary.csv` | results | R217 QA18 medium conflict_proto rich summary |
+| 2026-06-19 16:21 | /experiment-bridge | `../output/babi_unified_role_transition_r217_qa14_medium_conflict_proto_rich_mc8/summary.csv` | results | R217 QA14 medium conflict_proto rich min-count8 summary |
+| 2026-06-19 16:21 | /experiment-bridge | `../output/babi_unified_role_transition_r217_qa17_medium_conflict_proto_rich_mc8/summary.csv` | results | R217 QA17 medium conflict_proto rich min-count8 summary |
+| 2026-06-19 16:21 | /experiment-bridge | `../output/babi_unified_role_transition_r217_qa18_medium_conflict_proto_rich_mc8/summary.csv` | results | R217 QA18 medium conflict_proto rich min-count8 summary |
+| 2026-06-19 17:10 | /experiment-bridge | `../phase_binding_online_stream_experiment.py` | implementation | R218 target-rank/top-k candidate diagnostics for token stream evaluation |
+| 2026-06-19 17:10 | /experiment-bridge | `../output/phase_binding_online_stream_r218_topk_diag_base_smoke/summary.csv` | results | R218 fixed gain1.20 smoke top-k diagnostic summary |
+| 2026-06-19 17:10 | /experiment-bridge | `../output/phase_binding_online_stream_r218_topk_diag_r211_smoke/summary.csv` | results | R218 R211 transient feature smoke top-k diagnostic summary |
+| 2026-06-19 17:10 | /experiment-bridge | `../output/phase_binding_online_stream_r218_topk_diag_branch_state_smoke/summary.csv` | results | R218 branch-state rank32 smoke summary |
+| 2026-06-19 17:10 | /experiment-bridge | `../output/phase_binding_online_stream_r218_base_medium_s0/summary.csv` | results | R218 fixed gain1.20 medium seed0 top-k diagnostic summary |
+| 2026-06-19 17:10 | /experiment-bridge | `../output/phase_binding_online_stream_r218_branch_state_medium_s0/summary.csv` | results | R218 branch-state rank32 medium seed0 summary |
+| 2026-06-19 17:10 | /experiment-bridge | `../output/phase_binding_online_stream_r218_branch_state_medium_s1/summary.csv` | results | R218 branch-state rank32 medium seed1 summary |
+| 2026-06-19 17:10 | /experiment-bridge | `../output/phase_binding_online_stream_r218_branch_state_medium_s2/summary.csv` | results | R218 branch-state rank32 medium seed2 summary |
+| 2026-06-19 17:28 | /experiment-bridge | `../phase_binding_online_stream_experiment.py` | implementation | R219 branch-state target-rank update gate |
+| 2026-06-19 17:28 | /experiment-bridge | `../output/phase_binding_online_stream_r219_branch_state_top8_smoke/summary.csv` | results | R219 branch-state target-top8 smoke summary |
+| 2026-06-19 17:45 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R220 bAbI target-rank/top-k answer diagnostics |
+| 2026-06-19 17:45 | /experiment-bridge | `../output/babi_unified_r220_topk_diag_qa1_smoke/summary.csv` | results | R220 bAbI QA1 smoke top-k diagnostic summary |
+| 2026-06-19 17:45 | /experiment-bridge | `../output/babi_unified_r220_topk_diag_qa1_smoke/predictions_sample.csv` | results | R220 bAbI QA1 prediction sample with target-rank fields |
+| 2026-06-19 18:05 | /experiment-bridge | `../output/babi_unified_qa19_r221_r193_exact_topk_diag_s0/summary.csv` | results | R221 QA19 exact R193 summary with top-k rank diagnostics |
+| 2026-06-19 18:05 | /experiment-bridge | `../output/babi_unified_qa19_r221_r193_exact_topk_diag_s0/predictions_sample.csv` | results | R221 QA19 exact R193 prediction sample with target-rank fields |
+| 2026-06-19 18:35 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R222 default-off low-rank answer candidate arbiter |
+| 2026-06-19 18:35 | /experiment-bridge | `../output/babi_unified_qa19_r222_baseline_smoke/summary.csv` | results | R222 QA19 R193-compatible baseline smoke summary |
+| 2026-06-19 18:35 | /experiment-bridge | `../output/babi_unified_qa19_r222_candidate_arbiter_smoke/summary.csv` | results | R222 QA19 candidate arbiter x0.10 smoke summary |
+| 2026-06-19 18:35 | /experiment-bridge | `../output/babi_unified_qa19_r222_candidate_arbiter_x005_smoke/summary.csv` | results | R222 QA19 candidate arbiter x0.05 smoke summary |
+| 2026-06-19 18:35 | /experiment-bridge | `../output/babi_unified_qa19_r222_candidate_arbiter_x0025_smoke/summary.csv` | results | R222 QA19 candidate arbiter x0.025 smoke summary |
+| 2026-06-19 18:55 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R223 support gate for low-rank answer candidate arbiter |
+| 2026-06-19 18:55 | /experiment-bridge | `../output/babi_unified_qa19_r223_candidate_arbiter_sup10_smoke/summary.csv` | results | R223 QA19 candidate arbiter support1.0 smoke summary |
+| 2026-06-19 18:55 | /experiment-bridge | `../output/babi_unified_qa19_r223_candidate_arbiter_sup20_smoke/summary.csv` | results | R223 QA19 candidate arbiter support2.0 smoke summary |
+| 2026-06-19 19:20 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R224 default-off one-step greedy answer lookahead |
+| 2026-06-19 19:20 | /experiment-bridge | `../output/babi_unified_qa19_r224_lookahead_k4_w05_smoke/summary.csv` | results | R224 QA19 lookahead k4 weight0.5 smoke summary |
+| 2026-06-19 19:20 | /experiment-bridge | `../output/babi_unified_qa19_r224_lookahead_k4_smoke/summary.csv` | results | R224 QA19 lookahead k4 weight1.0 smoke summary |
+| 2026-06-19 19:20 | /experiment-bridge | `../output/babi_unified_qa19_r224_lookahead_k4_w2_smoke/summary.csv` | results | R224 QA19 lookahead k4 weight2.0 smoke summary |
+| 2026-06-19 19:20 | /experiment-bridge | `../output/babi_unified_qa19_r224_lookahead_k4_w1_medium_s0/summary.csv` | results | R224 QA19 lookahead k4 weight1.0 medium seed0 summary |
+| 2026-06-19 19:35 | /experiment-bridge | `../babi_component_oracle_diagnostic.py` | implementation | R225 component-oracle diagnostic script for bAbI prediction components |
+| 2026-06-19 19:35 | /experiment-bridge | `../output/babi_unified_qa19_r225_component_oracle_r193_s0/component_summary.csv` | results | R225 QA19 per-component summary on R193 component rows |
+| 2026-06-19 19:35 | /experiment-bridge | `../output/babi_unified_qa19_r225_component_oracle_r193_s0/component_oracle_summary.csv` | results | R225 QA19 component oracle summary on R193 component rows |
+| 2026-06-19 17:59 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R226 default-off candidate-path direct scoring mode for QA19 edge-path direct evidence |
+| 2026-06-19 17:59 | /experiment-bridge | `../output/babi_unified_qa19_r226_soft_feature_s05_smoke/summary.csv` | results | R226 old soft-feature direct smoke A/B summary |
+| 2026-06-19 17:59 | /experiment-bridge | `../output/babi_unified_qa19_r226_candidate_path_direct_s05_smoke/summary.csv` | results | R226 candidate-score direct smoke A/B summary |
+| 2026-06-19 17:59 | /experiment-bridge | `../output/babi_unified_qa19_r226_soft_feature_s05_medium_s0/summary.csv` | results | R226 old soft-feature direct medium seed0 summary |
+| 2026-06-19 17:59 | /experiment-bridge | `../output/babi_unified_qa19_r226_candidate_path_direct_s05_medium_s0/summary.csv` | results | R226 candidate-score direct medium seed0 summary |
+| 2026-06-19 18:08 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R227 default-off structured source/path/other direct scoring mode |
+| 2026-06-19 18:08 | /experiment-bridge | `../output/babi_unified_qa19_r227_structured_direct_s05_smoke/summary.csv` | results | R227 structured direct side0.50 path0.35 other0.15 smoke summary |
+| 2026-06-19 18:08 | /experiment-bridge | `../output/babi_unified_qa19_r227_structured_side075_path025_smoke/summary.csv` | results | R227 structured direct side0.75 path0.25 smoke summary |
+| 2026-06-19 18:08 | /experiment-bridge | `../output/babi_unified_qa19_r227_structured_side05_path05_smoke/summary.csv` | results | R227 structured direct side0.50 path0.50 smoke summary |
+| 2026-06-19 18:17 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R228 default-off reward-punish edge-path cleanup credit mode |
+| 2026-06-19 18:17 | /experiment-bridge | `../output/babi_unified_qa19_r228_selected_learn05_smoke/summary.csv` | results | R228 selected-target learned cleanup smoke summary |
+| 2026-06-19 18:17 | /experiment-bridge | `../output/babi_unified_qa19_r228_reward_learn05_smoke/summary.csv` | results | R228 reward-punish learned scale0.5 smoke summary |
+| 2026-06-19 18:17 | /experiment-bridge | `../output/babi_unified_qa19_r228_reward_learn10_smoke/summary.csv` | results | R228 reward-punish learned scale1.0 smoke summary |
+| 2026-06-19 18:23 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R229 edge-path candidate fields in bAbI component rows |
+| 2026-06-19 18:23 | /experiment-bridge | `../babi_path_candidate_diagnostic.py` | implementation | R229 path-candidate component-row diagnostic summarizer |
+| 2026-06-19 18:23 | /experiment-bridge | `../output/babi_unified_qa19_r229_pathdiag_smoke/prediction_components.csv` | results | R229 QA19 diagnostic smoke component rows with edge-path fields |
+| 2026-06-19 18:23 | /experiment-bridge | `../output/babi_unified_qa19_r229_pathdiag_summary_smoke/path_candidate_summary.csv` | results | R229 QA19 path-candidate diagnostic summary |
+| 2026-06-19 18:30 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R230 default-off soft multi-candidate edge-path cleanup eligibility |
+| 2026-06-19 18:30 | /experiment-bridge | `../output/babi_unified_qa19_r230_softelig_learn05_smoke/summary.csv` | results | R230 soft path eligibility learned scale0.5 smoke summary |
+| 2026-06-19 18:30 | /experiment-bridge | `../output/babi_unified_qa19_r230_softelig_learn10_smoke/summary.csv` | results | R230 soft path eligibility learned scale1.0 smoke summary |
+| 2026-06-19 18:41 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R231 default-off margin-gated soft edge-path cleanup eligibility |
+| 2026-06-19 18:41 | /experiment-bridge | `../output/babi_unified_qa19_r231_margin_gated_softelig_learn05_smoke/summary.csv` | results | R231 margin-gated soft eligibility mg0.1 ms0.1 ma0.25 smoke summary |
+| 2026-06-19 18:41 | /experiment-bridge | `../output/babi_unified_qa19_r231_margin_gated_softelig_mg02_ms0_ma025_smoke/summary.csv` | results | R231 margin-gated soft eligibility mg0.2 ms0 ma0.25 smoke summary |
+| 2026-06-19 18:41 | /experiment-bridge | `../output/babi_unified_qa19_r231_margin_gated_softelig_mg01_ms0_ma0_smoke/summary.csv` | results | R231 margin-gated soft eligibility clean ambiguity-only smoke summary |
+| 2026-06-19 18:48 | /experiment-bridge | `../output/babi_unified_qa19_r232_r222_pathdiag_smoke/prediction_components.csv` | results | R232 R222 matched smoke component rows |
+| 2026-06-19 18:48 | /experiment-bridge | `../output/babi_unified_qa19_r232_r231_mg01_ms0_ma0_pathdiag_smoke/prediction_components.csv` | results | R232 R231 clean matched smoke component rows |
+| 2026-06-19 18:48 | /experiment-bridge | `../output/babi_unified_qa19_r232_r222_pathdiag_summary_smoke/path_candidate_summary.csv` | results | R232 R222 path-candidate diagnostic summary |
+| 2026-06-19 18:48 | /experiment-bridge | `../output/babi_unified_qa19_r232_r231_mg01_ms0_ma0_pathdiag_summary_smoke/path_candidate_summary.csv` | results | R232 R231 clean path-candidate diagnostic summary |
+| 2026-06-19 18:57 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R233 default-off learned-margin escape edge-path cleanup credit mode |
+| 2026-06-19 18:57 | /experiment-bridge | `../output/babi_unified_qa19_r233_learned_margin_escape_dom1_esc05_smoke/summary.csv` | results | R233 learned-margin escape dom1 esc0.5 smoke summary |
+| 2026-06-19 18:57 | /experiment-bridge | `../output/babi_unified_qa19_r233_learned_margin_escape_dom05_esc10_smoke/summary.csv` | results | R233 learned-margin escape dom0.5 esc1 smoke summary |
+| 2026-06-19 18:57 | /experiment-bridge | `../output/babi_unified_qa19_r233_learned_margin_escape_dom05_esc10_pathdiag_smoke/prediction_components.csv` | results | R233 learned-margin escape strong variant component rows |
+| 2026-06-19 18:57 | /experiment-bridge | `../output/babi_unified_qa19_r233_learned_margin_escape_dom05_esc10_pathdiag_summary_smoke/path_candidate_summary.csv` | results | R233 learned-margin escape strong variant path-candidate diagnostic summary |
+| 2026-06-19 19:07 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R234 default-off transient path inhibition during edge-path candidate ranking |
+| 2026-06-19 19:07 | /experiment-bridge | `../output/babi_unified_qa19_r234_transient_inhibit_dom05_tis05_smoke/summary.csv` | results | R234 transient path inhibition tis0.5 lr0.5 smoke summary |
+| 2026-06-19 19:07 | /experiment-bridge | `../output/babi_unified_qa19_r234_transient_inhibit_dom05_tis02_lr025_smoke/summary.csv` | results | R234 transient path inhibition tis0.2 lr0.25 smoke summary |
+| 2026-06-19 19:07 | /experiment-bridge | `../output/babi_unified_qa19_r234_transient_inhibit_dom05_tis01_lr01_smoke/summary.csv` | results | R234 transient path inhibition tis0.1 lr0.1 smoke summary |
+| 2026-06-19 19:07 | /experiment-bridge | `../output/babi_unified_qa19_r234_transient_inhibit_dom05_tis02_lr025_pathdiag_smoke/prediction_components.csv` | results | R234 transient path inhibition middle variant component rows |
+| 2026-06-19 19:07 | /experiment-bridge | `../output/babi_unified_qa19_r234_transient_inhibit_dom05_tis02_lr025_pathdiag_summary_smoke/path_candidate_summary.csv` | results | R234 transient path inhibition middle variant path-candidate diagnostic summary |
+| 2026-06-19 19:16 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R235 transient inhibition key option with compact path-hash trace |
+| 2026-06-19 19:16 | /experiment-bridge | `../output/babi_unified_qa19_r235_pathhash_inhibit_dom05_tis02_lr025_smoke/summary.csv` | results | R235 path-hash transient inhibition tis0.2 lr0.25 smoke summary |
+| 2026-06-19 19:16 | /experiment-bridge | `../output/babi_unified_qa19_r235_pathhash_inhibit_dom05_tis05_lr05_smoke/summary.csv` | results | R235 path-hash transient inhibition tis0.5 lr0.5 smoke summary |
+| 2026-06-19 19:16 | /experiment-bridge | `../output/babi_unified_qa19_r235_pathhash_inhibit_dom05_tis05_lr05_pathdiag_smoke/prediction_components.csv` | results | R235 path-hash strong variant component rows |
+| 2026-06-19 19:16 | /experiment-bridge | `../output/babi_unified_qa19_r235_pathhash_inhibit_dom05_tis05_lr05_pathdiag_summary_smoke/path_candidate_summary.csv` | results | R235 path-hash strong variant path-candidate diagnostic summary |
+| 2026-06-19 19:28 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R236 anchor-path transient inhibition with source/mid/destination candidate structure |
+| 2026-06-19 19:28 | /experiment-bridge | `../output/babi_unified_qa19_r236_anchorpath_inhibit_dom05_tis02_lr025_smoke/summary.csv` | results | R236 anchor-path transient inhibition tis0.2 lr0.25 smoke summary |
+| 2026-06-19 19:28 | /experiment-bridge | `../output/babi_unified_qa19_r236_anchorpath_inhibit_dom05_tis05_lr05_smoke/summary.csv` | results | R236 anchor-path transient inhibition tis0.5 lr0.5 smoke summary |
+| 2026-06-19 19:28 | /experiment-bridge | `../output/babi_unified_qa19_r236_anchorpath_inhibit_dom05_tis05_lr05_pathdiag_smoke/prediction_components.csv` | results | R236 anchor-path strong variant component rows |
+| 2026-06-19 19:28 | /experiment-bridge | `../output/babi_unified_qa19_r236_anchorpath_inhibit_dom05_tis05_lr05_pathdiag_summary_smoke/path_candidate_summary.csv` | results | R236 anchor-path strong variant path-candidate diagnostic summary |
+| 2026-06-19 19:37 | /experiment-bridge | `../babi_unified_token_qa_experiment.py` | implementation | R237 anchor-keyed transient runner-up boost trace |
+| 2026-06-19 19:37 | /experiment-bridge | `../output/babi_unified_qa19_r237_anchor_inhibit_runnerboost_b03_lr05_m01_smoke/summary.csv` | results | R237 anchor-path runner boost scale0.3 smoke summary |
+| 2026-06-19 19:37 | /experiment-bridge | `../output/babi_unified_qa19_r237_anchor_inhibit_runnerboost_b06_lr05_m01_smoke/summary.csv` | results | R237 anchor-path runner boost scale0.6 smoke summary |
+| 2026-06-19 19:37 | /experiment-bridge | `../output/babi_unified_qa19_r237_anchor_inhibit_runnerboost_b06_lr05_m01_pathdiag_smoke/prediction_components.csv` | results | R237 anchor-path runner boost scale0.6 component rows |
+| 2026-06-19 19:37 | /experiment-bridge | `../output/babi_unified_qa19_r237_anchor_inhibit_runnerboost_b06_lr05_m01_pathdiag_summary_smoke/path_candidate_summary.csv` | results | R237 anchor-path runner boost scale0.6 path-candidate diagnostic summary |
+| 2026-06-19 19:51 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R238 default-off consistency/runner-learned gates for transient runner boost |
+| 2026-06-19 19:51 | /run-experiment | `../babi_path_candidate_diagnostic.py` | implementation | R238 selected/runner consistency fields in path-candidate diagnostic summaries |
+| 2026-06-19 19:51 | /run-experiment | `../output/babi_unified_qa19_r238_r237_repro_boost06_diag_s0/summary.csv` | results | R238 R237 boost0.6 repro summary with component rows |
+| 2026-06-19 19:51 | /run-experiment | `../output/babi_unified_qa19_r238_consistency_boost_cm0_diag_s0/summary.csv` | results | R238 consistency-gated runner boost cm0 smoke summary |
+| 2026-06-19 19:51 | /run-experiment | `../output/babi_unified_qa19_r238_consistency_boost_cm005_diag_s0/summary.csv` | results | R238 consistency-gated runner boost cm0.05 smoke summary |
+| 2026-06-19 19:51 | /run-experiment | `../output/babi_unified_qa19_r238_r237_repro_boost06_path_diag_s0/path_candidate_summary.csv` | results | R238 R237 repro path-candidate diagnostic summary |
+| 2026-06-19 19:51 | /run-experiment | `../output/babi_unified_qa19_r238_consistency_boost_cm0_path_diag_s0/path_candidate_summary.csv` | results | R238 cm0 path-candidate diagnostic summary |
+| 2026-06-19 19:51 | /run-experiment | `../output/babi_unified_qa19_r238_consistency_boost_cm005_path_diag_s0/path_candidate_summary.csv` | results | R238 cm0.05 path-candidate diagnostic summary |
+| 2026-06-19 20:04 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R239 default-off runner counterfactual target-margin gate for transient boost |
+| 2026-06-19 20:04 | /run-experiment | `../output/babi_unified_qa19_r239_r237_repro_boost06_diag_s0/summary.csv` | results | R239 R237 boost0.6 repro summary with runner counterfactual diagnostics |
+| 2026-06-19 20:04 | /run-experiment | `../output/babi_unified_qa19_r239_cfboost_gain0_diag_s0/summary.csv` | results | R239 counterfactual boost gain0 smoke summary |
+| 2026-06-19 20:04 | /run-experiment | `../output/babi_unified_qa19_r239_cfboost_gainm005_diag_s0/summary.csv` | results | R239 counterfactual boost gain-0.05 smoke summary |
+| 2026-06-19 20:04 | /run-experiment | `../output/babi_unified_qa19_r239_cfboost_gain0_b15_lr10_diag_s0/summary.csv` | results | R239 counterfactual boost gain0 high-amplitude smoke summary |
+| 2026-06-19 20:04 | /run-experiment | `../output/babi_unified_qa19_r239_r237_repro_boost06_path_diag_s0/path_candidate_summary.csv` | results | R239 R237 repro path-candidate diagnostic summary |
+| 2026-06-19 20:04 | /run-experiment | `../output/babi_unified_qa19_r239_cfboost_gain0_path_diag_s0/path_candidate_summary.csv` | results | R239 counterfactual gain0 path-candidate diagnostic summary |
+| 2026-06-19 20:04 | /run-experiment | `../output/babi_unified_qa19_r239_cfboost_gain0_b15_lr10_path_diag_s0/path_candidate_summary.csv` | results | R239 high-amplitude counterfactual path-candidate diagnostic summary |
+| 2026-06-19 20:22 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R240 default-off selected-vs-runner edge-path pair arbiter |
+| 2026-06-19 20:22 | /run-experiment | `../output/babi_unified_qa19_r240_runner_arbiter_s03_diag_s0/summary.csv` | results | R240 answer-error pair arbiter scale0.3 smoke summary |
+| 2026-06-19 20:22 | /run-experiment | `../output/babi_unified_qa19_r240_runner_arbiter_s06_diag_s0/summary.csv` | results | R240 answer-error pair arbiter scale0.6 smoke summary |
+| 2026-06-19 20:22 | /run-experiment | `../output/babi_unified_qa19_r240_runner_arbiter_cfpos_s06_diag_s0/summary.csv` | results | R240 counterfactual-positive pair arbiter scale0.6 smoke summary |
+| 2026-06-19 20:22 | /run-experiment | `../output/babi_unified_qa19_r240_runner_arbiter_cfpos_s03_diag_s0/summary.csv` | results | R240 counterfactual-positive pair arbiter scale0.3 smoke summary |
+| 2026-06-19 20:22 | /run-experiment | `../output/babi_unified_qa19_r240_runner_arbiter_cfpos_s06_m02_diag_s0/summary.csv` | results | R240 counterfactual-positive pair arbiter scale0.6 margin0.2 safety check summary |
+| 2026-06-19 20:22 | /run-experiment | `../output/babi_unified_qa19_r240_runner_arbiter_s03_path_diag_s0/path_candidate_summary.csv` | results | R240 answer-error scale0.3 path-candidate diagnostic summary |
+| 2026-06-19 20:22 | /run-experiment | `../output/babi_unified_qa19_r240_runner_arbiter_s06_path_diag_s0/path_candidate_summary.csv` | results | R240 answer-error scale0.6 path-candidate diagnostic summary |
+| 2026-06-19 20:22 | /run-experiment | `../output/babi_unified_qa19_r240_runner_arbiter_cfpos_s06_path_diag_s0/path_candidate_summary.csv` | results | R240 counterfactual-positive scale0.6 path-candidate diagnostic summary |
+| 2026-06-19 20:22 | /run-experiment | `../output/babi_unified_qa19_r240_runner_arbiter_cfpos_s03_path_diag_s0/path_candidate_summary.csv` | results | R240 counterfactual-positive scale0.3 path-candidate diagnostic summary |
+| 2026-06-19 20:33 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R241 count-gated and separate-negative selected-vs-runner edge-path pair arbiter |
+| 2026-06-19 20:33 | /run-experiment | `../output/babi_unified_qa19_r241_runner_arbiter_cfpos_s06_mc2_diag_s0/summary.csv` | results | R241 cf-positive pair arbiter min-count2 smoke summary |
+| 2026-06-19 20:33 | /run-experiment | `../output/babi_unified_qa19_r241_runner_arbiter_cfpos_s06_negsep_diag_s0/summary.csv` | results | R241 cf-positive pair arbiter separate-negative smoke summary |
+| 2026-06-19 20:33 | /run-experiment | `../output/babi_unified_qa19_r241_runner_arbiter_cfpos_s06_mc2_negsep_diag_s0/summary.csv` | results | R241 cf-positive pair arbiter min-count2 separate-negative smoke summary |
+| 2026-06-19 20:33 | /run-experiment | `../output/babi_unified_qa19_r241_runner_arbiter_cfpos_s06_mc2_path_diag_s0/path_candidate_summary.csv` | results | R241 min-count2 path-candidate diagnostic summary |
+| 2026-06-19 20:33 | /run-experiment | `../output/babi_unified_qa19_r241_runner_arbiter_cfpos_s06_negsep_path_diag_s0/path_candidate_summary.csv` | results | R241 separate-negative path-candidate diagnostic summary |
+| 2026-06-19 20:33 | /run-experiment | `../output/babi_unified_qa19_r241_runner_arbiter_cfpos_s06_mc2_negsep_path_diag_s0/path_candidate_summary.csv` | results | R241 min-count2 separate-negative path-candidate diagnostic summary |
+| 2026-06-19 20:43 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R242 rich-gap selected-vs-runner pair arbiter feature mode |
+| 2026-06-19 20:43 | /run-experiment | `../output/babi_unified_qa19_r242_runner_arbiter_richgap_cfpos_s06_mc2_diag_s0/summary.csv` | results | R242 rich-gap min-count2 smoke summary |
+| 2026-06-19 20:43 | /run-experiment | `../output/babi_unified_qa19_r242_runner_arbiter_richgap_cfpos_s06_negsep_diag_s0/summary.csv` | results | R242 rich-gap separate-negative smoke summary |
+| 2026-06-19 20:43 | /run-experiment | `../output/babi_unified_qa19_r242_runner_arbiter_richgap_cfpos_s06_mc2_negsep_diag_s0/summary.csv` | results | R242 rich-gap min-count2 separate-negative smoke summary |
+| 2026-06-19 20:43 | /run-experiment | `../output/babi_unified_qa19_r242_runner_arbiter_richgap_cfpos_s06_mc2_path_diag_s0/path_candidate_summary.csv` | results | R242 rich-gap min-count2 path-candidate diagnostic summary |
+| 2026-06-19 20:43 | /run-experiment | `../output/babi_unified_qa19_r242_runner_arbiter_richgap_cfpos_s06_negsep_path_diag_s0/path_candidate_summary.csv` | results | R242 rich-gap separate-negative path-candidate diagnostic summary |
+| 2026-06-19 20:43 | /run-experiment | `../output/babi_unified_qa19_r242_runner_arbiter_richgap_cfpos_s06_mc2_negsep_path_diag_s0/path_candidate_summary.csv` | results | R242 rich-gap min-count2 separate-negative path-candidate diagnostic summary |
+| 2026-06-19 20:50 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R243 fixed local dendritic closure score for edge-path ranking |
+| 2026-06-19 20:50 | /run-experiment | `../output/babi_unified_qa19_r243_closure025_diag_s0/summary.csv` | results | R243 closure scale0.25 smoke summary |
+| 2026-06-19 20:50 | /run-experiment | `../output/babi_unified_qa19_r243_closure05_diag_s0/summary.csv` | results | R243 closure scale0.50 smoke summary |
+| 2026-06-19 20:50 | /run-experiment | `../output/babi_unified_qa19_r243_closure025_path_diag_s0/path_candidate_summary.csv` | results | R243 closure scale0.25 path-candidate diagnostic summary |
+| 2026-06-19 20:50 | /run-experiment | `../output/babi_unified_qa19_r243_closure05_path_diag_s0/path_candidate_summary.csv` | results | R243 closure scale0.50 path-candidate diagnostic summary |
+| 2026-06-19 21:01 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R244 learned local positive/negative closure prototype banks |
+| 2026-06-19 21:01 | /run-experiment | `../output/babi_unified_qa19_r244_closure_proto_s03_mc1_diag_s0/summary.csv` | results | R244 closure prototype scale0.3 min-count1 smoke summary |
+| 2026-06-19 21:01 | /run-experiment | `../output/babi_unified_qa19_r244_closure_proto_s06_mc1_diag_s0/summary.csv` | results | R244 closure prototype scale0.6 min-count1 smoke summary |
+| 2026-06-19 21:01 | /run-experiment | `../output/babi_unified_qa19_r244_closure_proto_s06_mc2_diag_s0/summary.csv` | results | R244 closure prototype scale0.6 min-count2 smoke summary |
+| 2026-06-19 21:01 | /run-experiment | `../output/babi_unified_qa19_r244_closure_proto_s03_mc1_path_diag_s0/path_candidate_summary.csv` | results | R244 closure prototype scale0.3 min-count1 path-candidate diagnostic summary |
+| 2026-06-19 21:01 | /run-experiment | `../output/babi_unified_qa19_r244_closure_proto_s06_mc1_path_diag_s0/path_candidate_summary.csv` | results | R244 closure prototype scale0.6 min-count1 path-candidate diagnostic summary |
+| 2026-06-19 21:01 | /run-experiment | `../output/babi_unified_qa19_r244_closure_proto_s06_mc2_path_diag_s0/path_candidate_summary.csv` | results | R244 closure prototype scale0.6 min-count2 path-candidate diagnostic summary |
+| 2026-06-19 21:10 | /run-experiment | `../synthetic_two_hop_closure_experiment.py` | implementation | R245 controlled synthetic two-hop closure credit diagnostic |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_support_s0/summary.csv` | results | R245 support-only seed0 summary |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_support_s1/summary.csv` | results | R245 support-only seed1 summary |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_support_s2/summary.csv` | results | R245 support-only seed2 summary |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_fixed_s0/summary.csv` | results | R245 fixed closure seed0 summary |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_fixed_s1/summary.csv` | results | R245 fixed closure seed1 summary |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_fixed_s2/summary.csv` | results | R245 fixed closure seed2 summary |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_proto_s0/summary.csv` | results | R245 closure prototype16 seed0 summary |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_proto_s1/summary.csv` | results | R245 closure prototype16 seed1 summary |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_proto_s2/summary.csv` | results | R245 closure prototype16 seed2 summary |
+| 2026-06-19 21:10 | /run-experiment | `../output/twohop_r245_proto64_s0/summary.csv` | results | R245 closure prototype64 seed0 capacity probe summary |
+| 2026-06-19 21:18 | /run-experiment | `../synthetic_two_hop_closure_experiment.py` | implementation | R246 compact closure-affinity controller method |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_affinity_slots2_s05_s0/summary.csv` | results | R246 compact affinity slots2 scale0.5 seed0 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_affinity_slots2_s05_s1/summary.csv` | results | R246 compact affinity slots2 scale0.5 seed1 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_affinity_slots2_s05_s2/summary.csv` | results | R246 compact affinity slots2 scale0.5 seed2 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_affinity_s05_s0/summary.csv` | results | R246 compact affinity scale0.5 seed0 16-slot summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_affinity_s10_s0/summary.csv` | results | R246 compact affinity scale1.0 seed0 16-slot summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_affinity_s20_s0/summary.csv` | results | R246 compact affinity scale2.0 seed0 16-slot summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_affinity_s40_s0/summary.csv` | results | R246 compact affinity scale4.0 seed0 16-slot summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_affinity_slots4_s05_s0/summary.csv` | results | R246 compact affinity slots4 scale0.5 seed0 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_affinity_slots8_s05_s0/summary.csv` | results | R246 compact affinity slots8 scale0.5 seed0 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_stress_fixed_c075_s0/summary.csv` | results | R246 closure-confounded fixed closure seed0 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_stress_fixed_c075_s1/summary.csv` | results | R246 closure-confounded fixed closure seed1 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_stress_fixed_c075_s2/summary.csv` | results | R246 closure-confounded fixed closure seed2 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_stress_affinity_slots2_s10_c075_s0/summary.csv` | results | R246 closure-confounded compact affinity slots2 scale1.0 seed0 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_stress_affinity_slots2_s10_c075_s1/summary.csv` | results | R246 closure-confounded compact affinity slots2 scale1.0 seed1 summary |
+| 2026-06-19 21:18 | /run-experiment | `../output/twohop_r246_stress_affinity_slots2_s10_c075_s2/summary.csv` | results | R246 closure-confounded compact affinity slots2 scale1.0 seed2 summary |
+| 2026-06-19 21:45 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R247 default-off compact edge-path affinity controller for QA19 |
+| 2026-06-19 21:45 | /run-experiment | `../output/babi_unified_qa19_r247_r237_repro_v256_s0/summary.csv` | results | R247 current-control R237-style repro summary |
+| 2026-06-19 21:45 | /run-experiment | `../output/babi_unified_qa19_r247_affinity_s025_mc1_v256_s0/summary.csv` | results | R247 affinity scale0.25 min-count1 summary |
+| 2026-06-19 21:45 | /run-experiment | `../output/babi_unified_qa19_r247_affinity_s05_mc1_v256_s0/summary.csv` | results | R247 affinity scale0.5 min-count1 summary |
+| 2026-06-19 21:45 | /run-experiment | `../output/babi_unified_qa19_r247_affinity_s05_mc2_v256_s0/summary.csv` | results | R247 affinity scale0.5 min-count2 summary |
+| 2026-06-19 21:45 | /run-experiment | `../output/babi_unified_qa19_r247_affinity_s10_mc1_v256_s0/summary.csv` | results | R247 affinity scale1.0 min-count1 summary |
+| 2026-06-19 21:45 | /run-experiment | `../output/babi_unified_qa19_r247_affinity_s10_mc2_v256_s0/summary.csv` | results | R247 affinity scale1.0 min-count2 summary |
+| 2026-06-19 21:45 | /run-experiment | `../output/babi_unified_qa19_r247_r237_repro_v256_pathdiag_s0/path_candidate_summary.csv` | results | R247 current-control path diagnostic summary |
+| 2026-06-19 21:45 | /run-experiment | `../output/babi_unified_qa19_r247_affinity_s025_mc1_v256_pathdiag_s0/path_candidate_summary.csv` | results | R247 affinity scale0.25 min-count1 path diagnostic summary |
+| 2026-06-19 22:02 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R248 default-off margin/conflict gates for compact edge-path affinity controller |
+| 2026-06-19 22:02 | /run-experiment | `../output/babi_unified_qa19_r248_affinity_gate_mg010_dom0_cp0_v256_s0/summary.csv` | results | R248 margin-only affinity gate mg0.10 summary |
+| 2026-06-19 22:02 | /run-experiment | `../output/babi_unified_qa19_r248_affinity_gate_mg005_dom05_cp002_v256_s0/summary.csv` | results | R248 affinity gate mg0.05 learned-conflict summary |
+| 2026-06-19 22:02 | /run-experiment | `../output/babi_unified_qa19_r248_affinity_gate_mg010_dom05_cp002_v256_s0/summary.csv` | results | R248 affinity gate mg0.10 learned-conflict summary |
+| 2026-06-19 22:02 | /run-experiment | `../output/babi_unified_qa19_r248_affinity_gate_mg015_dom05_cp002_v256_s0/summary.csv` | results | R248 affinity gate mg0.15 learned-conflict summary |
+| 2026-06-19 22:02 | /run-experiment | `../output/babi_unified_qa19_r248_affinity_gate_mg015_dom05_cp002_v256_diag_s0/prediction_components.csv` | results | R248 best safety gate component diagnostic rows |
+| 2026-06-19 22:02 | /run-experiment | `../output/babi_unified_qa19_r248_affinity_gate_mg015_dom05_cp002_v256_pathdiag_s0/path_candidate_summary.csv` | results | R248 best safety gate path-candidate diagnostic summary |
+| 2026-06-19 22:27 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R249 default-off slot-homeostatic edge-path usage trace |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_homeo_s005_lr010_min1_v256_s0/summary.csv` | results | R249 homeostasis scale0.05 lr0.10 seed0 summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_homeo_s010_lr010_min1_v256_s0/summary.csv` | results | R249 homeostasis scale0.10 lr0.10 seed0 summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_homeo_s020_lr010_min1_v256_s0/summary.csv` | results | R249 homeostasis scale0.20 lr0.10 seed0 summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_homeo_s010_lr020_min1_v256_s0/summary.csv` | results | R249 homeostasis scale0.10 lr0.20 seed0 summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_homeo_s050_lr050_min1_v256_s0/summary.csv` | results | R249 high-strength homeostasis seed0 summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_r248_mg015_seed1_v256/summary.csv` | results | R249 paired seed-repeat R248 seed1 summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_r248_mg015_seed2_v256/summary.csv` | results | R249 paired seed-repeat R248 seed2 summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_homeo_s050_lr050_min1_seed1_v256/summary.csv` | results | R249 high-strength homeostasis seed1 summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_homeo_s050_lr050_min1_seed2_v256/summary.csv` | results | R249 high-strength homeostasis seed2 summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_homeo_s005_lr010_min1_v256_pathdiag_s0/path_candidate_summary.csv` | results | R249 mild homeostasis path-candidate diagnostic summary |
+| 2026-06-19 22:27 | /run-experiment | `../output/babi_unified_qa19_r249_homeo_s050_lr050_min1_v256_pathdiag_s0/path_candidate_summary.csv` | results | R249 high-strength homeostasis path-candidate diagnostic summary |
+| 2026-06-19 22:43 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R250 default-off conditional edge-path homeostasis gate |
+| 2026-06-19 22:43 | /run-experiment | `../output/babi_unified_qa19_r250_cond_homeo_dom05_sm005_s050_lr050_min1_v256_s0/summary.csv` | results | R250 conditional homeostasis dom0.5 sm0.05 seed0 summary |
+| 2026-06-19 22:43 | /run-experiment | `../output/babi_unified_qa19_r250_cond_homeo_dom01_sm010_s050_lr050_min1_v256_s0/summary.csv` | results | R250 conditional homeostasis dom0.1 sm0.10 seed0 summary |
+| 2026-06-19 22:43 | /run-experiment | `../output/babi_unified_qa19_r250_cond_homeo_dom01_sm025_s050_lr050_min1_v256_s0/summary.csv` | results | R250 conditional homeostasis dom0.1 sm0.25 seed0 summary |
+| 2026-06-19 22:43 | /run-experiment | `../output/babi_unified_qa19_r250_cond_homeo_dom05_sm005_s050_lr050_min1_v256_diag_s0/prediction_components.csv` | results | R250 conditional homeostasis component diagnostic rows |
+| 2026-06-19 22:43 | /run-experiment | `../output/babi_unified_qa19_r250_cond_homeo_dom05_sm005_s050_lr050_min1_v256_pathdiag_s0/path_candidate_summary.csv` | results | R250 conditional homeostasis path-candidate diagnostic summary |
+| 2026-06-19 22:55 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R251 default-off soft edge-path homeostasis modulation |
+| 2026-06-19 22:55 | /run-experiment | `../output/babi_unified_qa19_r251_soft_homeo_s2_floor05_dom05_sm005_s050_lr050_min1_v256_s0/summary.csv` | results | R251 soft homeostasis scale2 floor0.5 seed0 summary |
+| 2026-06-19 22:55 | /run-experiment | `../output/babi_unified_qa19_r251_soft_homeo_s2_floor075_dom05_sm005_s050_lr050_min1_v256_s0/summary.csv` | results | R251 soft homeostasis scale2 floor0.75 seed0 summary |
+| 2026-06-19 22:55 | /run-experiment | `../output/babi_unified_qa19_r251_soft_homeo_s2_floor075_dom05_sm005_s050_lr050_min1_seed1_v256/summary.csv` | results | R251 soft homeostasis scale2 floor0.75 seed1 summary |
+| 2026-06-19 22:55 | /run-experiment | `../output/babi_unified_qa19_r251_soft_homeo_s2_floor075_dom05_sm005_s050_lr050_min1_seed2_v256/summary.csv` | results | R251 soft homeostasis scale2 floor0.75 seed2 summary |
+| 2026-06-19 22:55 | /run-experiment | `../output/babi_unified_qa19_r251_soft_homeo_s2_floor075_dom05_sm005_s050_lr050_min1_v256_diag_s0/prediction_components.csv` | results | R251 soft homeostasis component diagnostic rows |
+| 2026-06-19 22:55 | /run-experiment | `../output/babi_unified_qa19_r251_soft_homeo_s2_floor075_dom05_sm005_s050_lr050_min1_v256_pathdiag_s0/path_candidate_summary.csv` | results | R251 soft homeostasis path-candidate diagnostic summary |
+| 2026-06-19 23:07 | /run-experiment | `../babi_unified_token_qa_experiment.py` | implementation | R252 default-off trace saturation for edge-path homeostasis |
+| 2026-06-19 23:07 | /run-experiment | `../output/babi_unified_qa19_r252_trace_sat_thr005_gain125_s050_lr050_min1_v256_s0/summary.csv` | results | R252 trace saturation threshold0.05 gain1.25 seed0 summary |
+| 2026-06-19 23:07 | /run-experiment | `../output/babi_unified_qa19_r252_trace_sat_thr010_gain15_s050_lr050_min1_v256_s0/summary.csv` | results | R252 trace saturation threshold0.10 gain1.5 seed0 summary |
+| 2026-06-19 23:07 | /run-experiment | `../output/babi_unified_qa19_r252_trace_sat_thr015_gain20_s050_lr050_min1_v256_s0/summary.csv` | results | R252 trace saturation threshold0.15 gain2.0 seed0 summary |
+| 2026-06-19 23:07 | /run-experiment | `../output/babi_unified_qa19_r252_trace_sat_thr020_gain20_s050_lr050_min1_v256_s0/summary.csv` | results | R252 trace saturation threshold0.20 gain2.0 seed0 summary |
+| 2026-06-19 23:07 | /run-experiment | `../output/babi_unified_qa19_r252_trace_sat_thr020_gain20_s050_lr050_min1_v256_diag_s0/prediction_components.csv` | results | R252 trace saturation component diagnostic rows |
+| 2026-06-19 23:07 | /run-experiment | `../output/babi_unified_qa19_r252_trace_sat_thr020_gain20_s050_lr050_min1_v256_pathdiag_s0/path_candidate_summary.csv` | results | R252 trace saturation path-candidate diagnostic summary |
+| 2026-06-20 00:45 | /run-experiment | `../phase_binding_online_stream_experiment.py` | implementation | U001 unified NoProp core with internal inhibition, calibration, gain, and optional eligibility pressure |
+| 2026-06-20 00:45 | /run-experiment | `refine-logs/U001_UNIFIED_NOPROP_CORE_2026-06-20.md` | results | U001 unified NoProp core report |
+| 2026-06-20 00:45 | /run-experiment | `refine-logs/EXPERIMENT_TRACKER.md` | implementation | Tracker entry for U001 |
+| 2026-06-20 00:45 | /run-experiment | `../output/u001_unified_noprop_smoke_seed0_v2/summary.csv` | results | U001 smoke seed0 v2 summary |
+| 2026-06-20 00:45 | /run-experiment | `../output/u001_unified_noprop_smoke_seed0_v2/generation_summary.csv` | results | U001 smoke seed0 v2 generation summary |
+| 2026-06-20 00:45 | /run-experiment | `../output/u001_unified_noprop_smoke_v2_elig005_seed0/summary.csv` | results | U001 eligibility weight0.05 smoke boundary summary |
+| 2026-06-20 00:45 | /run-experiment | `../output/u001_unified_noprop_medium_v2_seed0/summary.csv` | results | U001 medium v2 seed0 summary |
+| 2026-06-20 00:45 | /run-experiment | `../output/u001_unified_noprop_medium_v2_seed1/summary.csv` | results | U001 medium v2 seed1 summary |
+| 2026-06-20 00:45 | /run-experiment | `../output/u001_unified_noprop_medium_v2_seed2/summary.csv` | results | U001 medium v2 seed2 summary |
+| 2026-06-20 00:45 | /run-experiment | `../output/u001_unified_noprop_medium_v2_seed0/generation_summary.csv` | results | U001 medium v2 seed0 generation summary |
+| 2026-06-20 00:45 | /run-experiment | `../output/u001_unified_noprop_medium_v2_seed1/generation_summary.csv` | results | U001 medium v2 seed1 generation summary |
+| 2026-06-20 00:45 | /run-experiment | `../output/u001_unified_noprop_medium_v2_seed2/generation_summary.csv` | results | U001 medium v2 seed2 generation summary |
+| 2026-06-20 13:04 | /run-experiment | `../u002_attention_no_bp_experiment.py` | implementation | U002 Transformer-inspired no-BP attention prototype with position codes and center-difference diagnostic |
+| 2026-06-20 13:04 | /run-experiment | `refine-logs/U002_ATTENTION_NO_BP_CORE_2026-06-20.md` | results | U002 attention no-BP core report |
+| 2026-06-20 13:04 | /run-experiment | `refine-logs/EXPERIMENT_TRACKER.md` | implementation | Tracker entry for U002 |
+| 2026-06-20 13:04 | /run-experiment | `../output/u002_attention_tinystories_smoke_v2/summary.csv` | results | U002 TinyStories base attention smoke summary |
+| 2026-06-20 13:04 | /run-experiment | `../output/u002_attention_temporal_smoke_v2/summary.csv` | results | U002 temporal smoke summary |
+| 2026-06-20 13:04 | /run-experiment | `../output/u002_attention_tiny_attn0_b2/summary.csv` | results | U002 TinyStories no-attention ablation summary |
+| 2026-06-20 13:04 | /run-experiment | `../output/u002_attention_tiny_attn05_b4/summary.csv` | results | U002 TinyStories deeper blocks ablation summary |
+| 2026-06-20 13:04 | /run-experiment | `../output/u002_attention_tiny_ctx64_b2/summary.csv` | results | U002 TinyStories longer context ablation summary |
+| 2026-06-20 13:04 | /run-experiment | `../output/u002_attention_tiny_d128_b2/summary.csv` | results | U002 TinyStories wider model ablation summary |
+| 2026-06-20 14:46 | /run-experiment | `../u003_error_microcircuit_no_bp_experiment.py` | implementation | U003 error-neuron microcircuit no-BP prototype with direct/layered/hybrid error feedback and hidden center-difference diagnostics |
+| 2026-06-20 14:46 | /run-experiment | `refine-logs/U003_ERROR_MICROCIRCUIT_CORE_2026-06-20.md` | results | U003 error-neuron microcircuit report |
+| 2026-06-20 14:46 | /run-experiment | `refine-logs/EXPERIMENT_TRACKER.md` | implementation | Tracker entry for U003 |
+| 2026-06-20 14:46 | /run-experiment | `../output/u003_error_mc_temporal_smoke/summary.csv` | results | U003 temporal smoke summary |
+| 2026-06-20 14:46 | /run-experiment | `../output/u003_error_mc_tinystories_b4_seed0/summary.csv` | results | U003 TinyStories 4-layer random-feedback summary |
+| 2026-06-20 14:46 | /run-experiment | `../output/u003_error_mc_tinystories_b4_transpose_seed0/summary.csv` | results | U003 TinyStories 4-layer transpose-feedback upper-bound summary |
+| 2026-06-20 14:46 | /run-experiment | `../output/u003_error_mc_tinystories_b8_seed0/summary.csv` | results | U003 TinyStories 8-layer random-feedback depth summary |
+| 2026-06-20 14:46 | /run-experiment | `../output/u003_error_mc_tinystories_b8_transpose_seed0/summary.csv` | results | U003 TinyStories 8-layer transpose-feedback depth upper-bound summary |
+| 2026-06-20 16:00 | /run-experiment | `../u004_paper_error_microcircuit_llm_experiment.py` | implementation | U004 paper-faithful error-neuron microcircuit LLM adapter with `WPP/WIP/BPI/BII`, residual stack, optional attention context, and TinyStories/GSM8k next-token mixing |
+| 2026-06-20 16:00 | /run-experiment | `refine-logs/U004_PAPER_ERROR_MICROCIRCUIT_LLM_2026-06-20.md` | results | U004 paper-faithful error-microcircuit report |
+| 2026-06-20 16:00 | /run-experiment | `refine-logs/EXPERIMENT_TRACKER.md` | implementation | Tracker entry for U004 |
+| 2026-06-20 16:00 | /run-experiment | `../output/u004_paper_mc_tiny_fa_b4_sparse_v2_seed0/summary.csv` | results | U004 TinyStories FA skip sparse-v2 summary |
+| 2026-06-20 16:00 | /run-experiment | `../output/u004_paper_mc_tiny_fa_layered_b4_seed0/summary.csv` | results | U004 TinyStories FA layered summary |
+| 2026-06-20 16:00 | /run-experiment | `../output/u004_paper_mc_tiny_fa_b4_attn05_v2_seed0/summary.csv` | results | U004 TinyStories FA skip attention0.5 sparse-v2 summary |
+| 2026-06-20 16:00 | /run-experiment | `../output/u004_paper_mc_tiny_bp_b4_sparse_v2_seed0/summary.csv` | results | U004 TinyStories BP layered diagnostic upper-bound summary |
+| 2026-06-20 16:00 | /run-experiment | `../output/u004_paper_mc_mix_fa_b4_sparse_v2_seed0/summary.csv` | results | U004 TinyStories+GSM8k-Aug mix FA skip summary |
+| 2026-06-20 16:37 | /run-experiment | `../u005_reference_errormc_llm_adapter.py` | implementation | U005 direct adapter around cloned `Error-Neuron-Microcircuits` reference `init_MC/errormc_model` |
+| 2026-06-20 16:37 | /run-experiment | `refine-logs/U005_REFERENCE_ERRORMC_ADAPTER_2026-06-20.md` | results | U005 direct reference adapter report |
+| 2026-06-20 16:37 | /run-experiment | `refine-logs/EXPERIMENT_TRACKER.md` | implementation | Tracker entry for U005 |
+| 2026-06-20 16:37 | /run-experiment | `../output/u005_reference_errormc_tiny_fa_smoke/summary.csv` | results | U005 TinyStories reference FA layered logit-scale8 summary |
+| 2026-06-20 16:37 | /run-experiment | `../output/u005_reference_errormc_tiny_bp_smoke/summary.csv` | results | U005 TinyStories reference BP layered logit-scale8 summary |
+| 2026-06-20 16:37 | /run-experiment | `../output/u005_reference_errormc_tiny_fa_logit1/summary.csv` | results | U005 TinyStories reference FA layered logit-scale1 summary |
+| 2026-06-20 16:37 | /run-experiment | `../output/u005_reference_errormc_tiny_bp_logit1/summary.csv` | results | U005 TinyStories reference BP layered logit-scale1 summary |
+| 2026-06-20 18:05 | /run-experiment | `../u006_reference_stream_errormc_llm_adapter.py` | implementation | U006 direct reference streaming errormc LLM adapter with token/document stream, position-coded input, multi-step presentation, and TinyStories/GSM8k mixing |
+| 2026-06-20 18:05 | /run-experiment | `refine-logs/U006_REFERENCE_STREAM_ERRORMC_LLM_2026-06-20.md` | results | U006 reference streaming error-microcircuit report |
+| 2026-06-20 18:05 | /run-experiment | `refine-logs/EXPERIMENT_TRACKER.md` | implementation | Tracker entry for U006 |
+| 2026-06-20 18:05 | /run-experiment | `../output/u006_reference_stream_errormc_tiny_fa_steps5/summary.csv` | results | U006 TinyStories FA layered 5-step no-bias summary |
+| 2026-06-20 18:05 | /run-experiment | `../output/u006_reference_stream_errormc_tiny_fa_steps5_unigram/summary.csv` | results | U006 TinyStories FA layered 5-step unigram-readout summary |
+| 2026-06-20 18:05 | /run-experiment | `../output/u006_reference_stream_errormc_tiny_fa_steps20_unigram/summary.csv` | results | U006 TinyStories FA layered 20-step unigram-readout summary |
+| 2026-06-20 18:05 | /run-experiment | `../output/u006_reference_stream_errormc_tiny_bp_steps20_unigram/summary.csv` | results | U006 TinyStories BP diagnostic 20-step unigram-readout summary |
+| 2026-06-20 18:05 | /run-experiment | `../output/u006_reference_stream_errormc_mix_smoke/summary.csv` | results | U006 TinyStories+GSM8k-Aug mix stream smoke summary |
+| 2026-06-20 18:43 | /run-experiment | `../output/u006_reference_stream_errormc_mix_epoch1_fa_b4_steps20/summary.csv` | results | U006 TinyStories+GSM8k-Aug mixed one-epoch FA summary |
+| 2026-06-20 18:43 | /run-experiment | `../output/u006_reference_stream_errormc_mix_epoch1_fa_b4_steps20/greedy_samples.txt` | results | U006 mixed one-epoch greedy samples showing punctuation-loop collapse |
+| 2026-06-20 19:18 | /run-experiment | `../u007_reference_dpc_llm_adapter.py` | implementation | U007 direct reference dPC/Rao-Ballard predictive-coding LLM adapter |
+| 2026-06-20 19:18 | /run-experiment | `refine-logs/U007_REFERENCE_DPC_RAO_BALLARD_2026-06-20.md` | results | U007 reference dPC/Rao-Ballard report |
+| 2026-06-20 19:18 | /run-experiment | `../output/u007_reference_dpc_bp_sps_smoke_stable/summary.csv` | results | U007 stable dPC/BP/SPS small-scale smoke summary |
+| 2026-06-20 19:18 | /run-experiment | `../output/u007_reference_dpc_bp_sps_smoke_logit1/summary.csv` | results | U007 dPC/BP/SPS logit-scale boundary summary |
+| 2026-06-20 19:18 | /run-experiment | `../output/u007_reference_dpc_bp_sps_smoke_scale01/summary.csv` | results | U007 dPC/BP/SPS init-scale boundary summary |
+| 2026-06-20 19:18 | /run-experiment | `../output/u007_reference_dpc_bp_sps_smoke_centered/summary.csv` | results | U007 dPC/BP/SPS centered-target boundary summary |
+| 2026-06-20 19:42 | /run-experiment | `../Error-Neuron-Microcircuits/numpy_model/src/init_MC.py` | implementation | U008 minimal dPC source BPP initialization shape fix |
+| 2026-06-20 19:42 | /run-experiment | `../Error-Neuron-Microcircuits/numpy_model/src/microcircuit.py` | implementation | U008 minimal dPC source `BPP_init` pass-through fix |
+| 2026-06-20 19:42 | /run-experiment | `refine-logs/U008_DPC_SOURCE_SHAPE_AUDIT_2026-06-20.md` | results | U008 dPC source shape audit report |
+| 2026-06-20 19:42 | /run-experiment | `../output/u008_dpc_fa_shape_fix_smoke/summary.csv` | results | U008 dPC/FA tiny shape-fix smoke summary |
+| 2026-06-20 19:42 | /run-experiment | `../output/u008_dpc_fa_b4_shape_fix_stable/summary.csv` | results | U008 dPC/FA d64 b4 stable-scale summary |
+| 2026-06-20 19:42 | /run-experiment | `../output/u008_dpc_fa_b4_shape_fix_scale01/summary.csv` | results | U008 dPC/FA d64 b4 larger-scale summary |
+| 2026-06-20 19:42 | /run-experiment | `../output/u008_dpc_fa_b4_shape_fix_sps/summary.csv` | results | U008 dPC/FA d64 b4 SPS summary |
+| 2026-06-20 19:42 | /run-experiment | `../output/u008_dpc_fa_mix_smoke_shape_fix/summary.csv` | results | U008 dPC/FA TinyStories+GSM8k mix smoke summary |

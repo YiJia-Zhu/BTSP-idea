@@ -9,6 +9,23 @@
 
 最终候选必须是**神经网络类 no-BP 方法**，例如 dendritic/DEN1810-like 双室或树突误差模型、STDP/BTSP 及其调制版本、e-prop/三因子 eligibility、反馈对齐或抑制性回路模型。统计表格方法可以帮助定位数据、评测和记忆瓶颈，但不能替代神经结构本身。
 
+## 统一模型迭代门槛
+
+后续主线必须产出**一个统一模型**，而不是针对 TinyStories、bAbI/QA19、temporal association 等数据集分别设计的系统。不同任务只能通过数据编码、训练流和评价 adapter 接入；模型核心必须共享。
+
+每次提出或实现实验前，必须先检查：
+
+- 这是否仍然是同一个模型核心，而不是数据集专用模块集合？
+- 核心学习接口是否任务无关，例如 `observe(...)`、`predict_next(...)`、`generate(...)`、`state_dict(...)`？
+- 新机制是否能原则上同时用于续写、QA、时序联想等任务，而不依赖 answer slot、edge path、候选答案图、QA parser 或其他数据集结构？
+- 是否因为某个 benchmark 的错误而临时增加补丁模块？如果是，应拒绝作为主线。
+- 是否可以通过修改更少、更核心的状态更新、局部可塑性、竞争/抑制、树突调制或 eligibility 规则解决，而不是外挂一个新模块？
+- 机制是否足够简洁，能被清楚解释为神经网络类 no-BP 学习规则？
+
+优先策略：**不要专门加模块；优先思考如何修改统一核心模块，并保持设计简洁。** 如果一个想法需要 dataset-specific role graph、answer-slot controller、edge-path candidate logic、专用纠错器或结果驱动 gate，它只能作为诊断实验，不能作为最终模型路线。
+
+主线实验从现在起建议使用 `U001`、`U002` ... 命名。旧 `Rxxx` 结果只能作为历史探索和诊断材料；任何旧结论进入主线前必须重新通过 `research_no_bp/UNIFIED_MODEL_CONTRACT.md`。
+
 
 ## API地址与密钥
 注意：API耗费金钱，你最好使用本地数据测试正确后才开始大规模测试

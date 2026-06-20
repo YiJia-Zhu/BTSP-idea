@@ -39,6 +39,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = SCRIPT_DIR / "data" / "babi_qa_processed"
 DEFAULT_TOKENIZER = phase.DEFAULT_TOKENIZER
 DEFAULT_PRETRAIN_FILE = phase.DEFAULT_TRAIN
+RANK_DIAGNOSTIC_KS = (2, 4, 8)
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -146,6 +147,68 @@ def softmax_loss_and_pred(scores: np.ndarray, target: int, temperature: float) -
     probs = phase.softmax(scores, temperature)
     pred = int(np.argmax(probs))
     return -math.log(float(probs[int(target)]) + 1e-9), pred, float(probs[int(target)])
+
+
+def candidate_rank_metrics(
+    scores: np.ndarray,
+    target: int,
+    pred: int,
+    ks: Sequence[int] = RANK_DIAGNOSTIC_KS,
+) -> dict[str, Any]:
+    values = np.asarray(scores, dtype=np.float32)
+    target_id = int(target)
+    pred_id = int(pred)
+    if target_id < 0 or target_id >= values.shape[0]:
+        return {
+            "target_rank": values.shape[0] + 1,
+            "target_margin": float("nan"),
+            "correct": 0,
+            "error": 1,
+            **{f"top{k}": 0 for k in ks},
+            **{f"error_top{k}": 0 for k in ks},
+        }
+    target_score = float(values[target_id])
+    target_rank = 1 + int(np.sum(values > target_score))
+    wrong_scores = values.copy()
+    wrong_scores[target_id] = -np.inf
+    best_wrong = float(np.max(wrong_scores)) if wrong_scores.size > 1 else -np.inf
+    target_margin = target_score - best_wrong if math.isfinite(best_wrong) else 0.0
+    correct = int(pred_id == target_id)
+    error = 1 - correct
+    row: dict[str, Any] = {
+        "target_rank": int(target_rank),
+        "target_margin": float(target_margin),
+        "correct": correct,
+        "error": error,
+    }
+    for k in ks:
+        top_hit = int(target_rank <= min(int(k), values.shape[0]))
+        row[f"top{k}"] = top_hit
+        row[f"error_top{k}"] = int(error and top_hit)
+    return row
+
+
+def summarize_rank_diagnostics(
+    prefix: str,
+    rank_sum: float,
+    margin_sum: float,
+    top_hits: dict[int, int],
+    error_top_hits: dict[int, int],
+    error_count: int,
+    total: int,
+) -> dict[str, float | int]:
+    summary: dict[str, float | int] = {
+        f"{prefix}_target_rank_mean": rank_sum / max(total, 1),
+        f"{prefix}_target_margin_mean": margin_sum / max(total, 1),
+        f"{prefix}_error_count": int(error_count),
+    }
+    for k in sorted(top_hits):
+        summary[f"{prefix}_top{k}_acc"] = top_hits[k] / max(total, 1)
+        summary[f"{prefix}_error_top{k}_rate"] = error_top_hits[k] / max(error_count, 1)
+        summary[f"{prefix}_oracle_top{k}_acc"] = (
+            total - error_count + error_top_hits[k]
+        ) / max(total, 1)
+    return summary
 
 
 def safe_state_bytes(memory: Any) -> int:
@@ -1135,6 +1198,19 @@ class OnlineLocalRoleTransitionMemory:
     JOINT_BRANCH_ARBITER_VARIANTS = ("base_plus_role_joint", "base_plus_direct_joint")
     BRANCH_ARBITER_VARIANTS = BASE_BRANCH_ARBITER_VARIANTS
     JOINT_SUPPRESS_MODES = ("all_wrong", "protect_direct", "joint_only")
+    EDGE_PATH_DIRECT_MODES = ("soft_feature", "candidate_scores", "structured_scores")
+    EDGE_PATH_CLEANUP_CREDIT_MODES = (
+        "selected_target",
+        "reward_punish",
+        "soft_eligibility",
+        "margin_gated_soft_eligibility",
+        "learned_margin_escape",
+        "transient_inhibit_escape",
+    )
+    EDGE_PATH_RUNNER_ARBITER_CREDIT_MODES = ("answer_error", "counterfactual_positive")
+    EDGE_PATH_RUNNER_ARBITER_NEGATIVE_MODES = ("subtract", "separate")
+    EDGE_PATH_RUNNER_ARBITER_FEATURE_MODES = ("pair", "rich_gaps")
+    EDGE_PATH_AFFINITY_FEATURE_DIM = 12
 
     def __init__(
         self,
@@ -1187,11 +1263,13 @@ class OnlineLocalRoleTransitionMemory:
         role_branch_arbiter_wrong_lr: float,
         role_branch_arbiter_score_scale: float,
         role_branch_arbiter_margin: float,
+        role_branch_arbiter_min_count: float,
         role_branch_arbiter_base_margin: float,
         role_branch_arbiter_threshold_lr: float,
         role_branch_arbiter_rescue_role_threshold: float,
         role_branch_arbiter_rescue_joint_threshold: float,
         role_branch_arbiter_joint_variants: bool,
+        role_branch_arbiter_rich_conflict_features: bool,
         role_event_cache_size: int,
         edge_path_cleanup_answer_slots: int,
         edge_path_cleanup_slots: int,
@@ -1200,15 +1278,70 @@ class OnlineLocalRoleTransitionMemory:
         edge_path_cleanup_score_scale: float,
         edge_path_cleanup_top_k: int,
         edge_path_cleanup_inhibit: float,
+        edge_path_cleanup_credit_mode: str,
+        edge_path_margin_gate: float,
+        edge_path_margin_min_scale: float,
+        edge_path_margin_alt_scale: float,
+        edge_path_margin_learned_dominance: float,
+        edge_path_margin_escape_scale: float,
+        edge_path_transient_inhibit_scale: float,
+        edge_path_transient_inhibit_lr: float,
+        edge_path_transient_inhibit_decay: float,
+        edge_path_transient_inhibit_key: str,
+        edge_path_transient_inhibit_hash_size: int,
+        edge_path_transient_boost_scale: float,
+        edge_path_transient_boost_lr: float,
+        edge_path_transient_boost_support_margin: float,
+        edge_path_transient_boost_consistency_margin: float,
+        edge_path_transient_boost_runner_learned_max: float,
+        edge_path_transient_boost_counterfactual_min_gain: float,
+        edge_path_homeostasis_scale: float,
+        edge_path_homeostasis_lr: float,
+        edge_path_homeostasis_decay: float,
+        edge_path_homeostasis_min_slot: int,
+        edge_path_homeostasis_learned_dominance: float,
+        edge_path_homeostasis_structure_margin: float,
+        edge_path_homeostasis_soft_mod_scale: float,
+        edge_path_homeostasis_soft_mod_floor: float,
+        edge_path_homeostasis_trace_threshold: float,
+        edge_path_homeostasis_trace_gain: float,
+        edge_path_runner_arbiter_slots: int,
+        edge_path_runner_arbiter_lr: float,
+        edge_path_runner_arbiter_wrong_lr: float,
+        edge_path_runner_arbiter_score_scale: float,
+        edge_path_runner_arbiter_margin: float,
+        edge_path_runner_arbiter_min_count: float,
+        edge_path_runner_arbiter_negative_mode: str,
+        edge_path_runner_arbiter_feature_mode: str,
+        edge_path_runner_arbiter_gap_scale: float,
+        edge_path_runner_arbiter_credit_mode: str,
         edge_path_soft_top_k: int,
         edge_path_soft_temperature: float,
         edge_path_soft_consistency_scale: float,
         edge_path_soft_learned_scale: float,
+        edge_path_closure_score_scale: float,
+        edge_path_closure_proto_slots: int,
+        edge_path_closure_proto_lr: float,
+        edge_path_closure_proto_wrong_lr: float,
+        edge_path_closure_proto_score_scale: float,
+        edge_path_closure_proto_min_count: float,
+        edge_path_affinity_slots: int,
+        edge_path_affinity_lr: float,
+        edge_path_affinity_wrong_lr: float,
+        edge_path_affinity_score_scale: float,
+        edge_path_affinity_min_count: float,
+        edge_path_affinity_margin_gate: float,
+        edge_path_affinity_learned_dominance: float,
+        edge_path_affinity_consistency_protect: float,
         edge_path_direct_answer_slots: int,
         edge_path_direct_slots: int,
         edge_path_direct_lr: float,
         edge_path_direct_wrong_lr: float,
         edge_path_direct_score_scale: float,
+        edge_path_direct_mode: str,
+        edge_path_structured_side_weight: float,
+        edge_path_structured_path_weight: float,
+        edge_path_structured_other_weight: float,
         seed: int,
     ) -> None:
         self.vocab_size = int(vocab_size)
@@ -1266,6 +1399,7 @@ class OnlineLocalRoleTransitionMemory:
         self.role_branch_arbiter_wrong_lr = float(np.clip(role_branch_arbiter_wrong_lr, 0.0, 1.0))
         self.role_branch_arbiter_score_scale = float(max(role_branch_arbiter_score_scale, 0.0))
         self.role_branch_arbiter_margin = float(max(role_branch_arbiter_margin, 0.0))
+        self.role_branch_arbiter_min_count = float(max(role_branch_arbiter_min_count, 0.0))
         self.role_branch_arbiter_base_margin = float(max(role_branch_arbiter_base_margin, 0.0))
         self.role_branch_arbiter_threshold_lr = float(np.clip(role_branch_arbiter_threshold_lr, 0.0, 1.0))
         self.role_branch_arbiter_rescue_role_threshold = float(
@@ -1275,6 +1409,9 @@ class OnlineLocalRoleTransitionMemory:
             max(role_branch_arbiter_rescue_joint_threshold, 0.0)
         )
         self.role_branch_arbiter_joint_variants = bool(role_branch_arbiter_joint_variants)
+        self.role_branch_arbiter_rich_conflict_features = bool(
+            role_branch_arbiter_rich_conflict_features
+        )
         if self.role_branch_arbiter_joint_variants and not self.role_joint_rescue_readout:
             raise ValueError("--role-branch-arbiter-joint-variants requires --role-joint-rescue-readout")
         self.branch_arbiter_variants = self.BASE_BRANCH_ARBITER_VARIANTS + (
@@ -1292,15 +1429,112 @@ class OnlineLocalRoleTransitionMemory:
         self.edge_path_cleanup_score_scale = float(max(edge_path_cleanup_score_scale, 0.0))
         self.edge_path_cleanup_top_k = max(int(edge_path_cleanup_top_k), 1)
         self.edge_path_cleanup_inhibit = float(max(edge_path_cleanup_inhibit, 0.0))
+        self.edge_path_cleanup_credit_mode = str(edge_path_cleanup_credit_mode)
+        if self.edge_path_cleanup_credit_mode not in self.EDGE_PATH_CLEANUP_CREDIT_MODES:
+            raise ValueError(f"unknown edge_path_cleanup_credit_mode: {self.edge_path_cleanup_credit_mode}")
+        self.edge_path_margin_gate = float(max(edge_path_margin_gate, 0.0))
+        self.edge_path_margin_min_scale = float(np.clip(edge_path_margin_min_scale, 0.0, 1.0))
+        self.edge_path_margin_alt_scale = float(np.clip(edge_path_margin_alt_scale, 0.0, 1.0))
+        self.edge_path_margin_learned_dominance = float(max(edge_path_margin_learned_dominance, 0.0))
+        self.edge_path_margin_escape_scale = float(np.clip(edge_path_margin_escape_scale, 0.0, 1.0))
+        self.edge_path_transient_inhibit_scale = float(max(edge_path_transient_inhibit_scale, 0.0))
+        self.edge_path_transient_inhibit_lr = float(np.clip(edge_path_transient_inhibit_lr, 0.0, 1.0))
+        self.edge_path_transient_inhibit_decay = float(
+            np.clip(edge_path_transient_inhibit_decay, 0.0, 1.0)
+        )
+        self.edge_path_transient_inhibit_key = str(edge_path_transient_inhibit_key)
+        if self.edge_path_transient_inhibit_key not in {"mid", "path_hash", "anchor_path"}:
+            raise ValueError(
+                f"unknown edge_path_transient_inhibit_key: {self.edge_path_transient_inhibit_key}"
+            )
+        self.edge_path_transient_inhibit_hash_size = max(int(edge_path_transient_inhibit_hash_size), 1)
+        self.edge_path_transient_boost_scale = float(max(edge_path_transient_boost_scale, 0.0))
+        self.edge_path_transient_boost_lr = float(np.clip(edge_path_transient_boost_lr, 0.0, 1.0))
+        self.edge_path_transient_boost_support_margin = float(max(edge_path_transient_boost_support_margin, 0.0))
+        self.edge_path_transient_boost_consistency_margin = float(
+            edge_path_transient_boost_consistency_margin
+        )
+        self.edge_path_transient_boost_runner_learned_max = float(
+            edge_path_transient_boost_runner_learned_max
+        )
+        self.edge_path_transient_boost_counterfactual_min_gain = float(
+            edge_path_transient_boost_counterfactual_min_gain
+        )
+        self.edge_path_homeostasis_scale = float(max(edge_path_homeostasis_scale, 0.0))
+        self.edge_path_homeostasis_lr = float(np.clip(edge_path_homeostasis_lr, 0.0, 1.0))
+        self.edge_path_homeostasis_decay = float(np.clip(edge_path_homeostasis_decay, 0.0, 1.0))
+        self.edge_path_homeostasis_min_slot = max(int(edge_path_homeostasis_min_slot), 0)
+        self.edge_path_homeostasis_learned_dominance = float(
+            max(edge_path_homeostasis_learned_dominance, 0.0)
+        )
+        self.edge_path_homeostasis_structure_margin = float(
+            max(edge_path_homeostasis_structure_margin, 0.0)
+        )
+        self.edge_path_homeostasis_soft_mod_scale = float(
+            max(edge_path_homeostasis_soft_mod_scale, 0.0)
+        )
+        self.edge_path_homeostasis_soft_mod_floor = float(
+            np.clip(edge_path_homeostasis_soft_mod_floor, 0.0, 1.0)
+        )
+        self.edge_path_homeostasis_trace_threshold = float(
+            np.clip(edge_path_homeostasis_trace_threshold, 0.0, 1.0)
+        )
+        self.edge_path_homeostasis_trace_gain = float(max(edge_path_homeostasis_trace_gain, 0.0))
+        self.edge_path_runner_arbiter_slots = max(int(edge_path_runner_arbiter_slots), 1)
+        self.edge_path_runner_arbiter_lr = float(np.clip(edge_path_runner_arbiter_lr, 0.0, 1.0))
+        self.edge_path_runner_arbiter_wrong_lr = float(
+            np.clip(edge_path_runner_arbiter_wrong_lr, 0.0, 1.0)
+        )
+        self.edge_path_runner_arbiter_score_scale = float(max(edge_path_runner_arbiter_score_scale, 0.0))
+        self.edge_path_runner_arbiter_margin = float(max(edge_path_runner_arbiter_margin, 0.0))
+        self.edge_path_runner_arbiter_min_count = float(max(edge_path_runner_arbiter_min_count, 0.0))
+        self.edge_path_runner_arbiter_negative_mode = str(edge_path_runner_arbiter_negative_mode)
+        if self.edge_path_runner_arbiter_negative_mode not in self.EDGE_PATH_RUNNER_ARBITER_NEGATIVE_MODES:
+            raise ValueError(
+                f"unknown edge_path_runner_arbiter_negative_mode: {self.edge_path_runner_arbiter_negative_mode}"
+            )
+        self.edge_path_runner_arbiter_feature_mode = str(edge_path_runner_arbiter_feature_mode)
+        if self.edge_path_runner_arbiter_feature_mode not in self.EDGE_PATH_RUNNER_ARBITER_FEATURE_MODES:
+            raise ValueError(
+                f"unknown edge_path_runner_arbiter_feature_mode: {self.edge_path_runner_arbiter_feature_mode}"
+            )
+        self.edge_path_runner_arbiter_gap_scale = float(max(edge_path_runner_arbiter_gap_scale, 0.0))
+        self.edge_path_runner_arbiter_credit_mode = str(edge_path_runner_arbiter_credit_mode)
+        if self.edge_path_runner_arbiter_credit_mode not in self.EDGE_PATH_RUNNER_ARBITER_CREDIT_MODES:
+            raise ValueError(
+                f"unknown edge_path_runner_arbiter_credit_mode: {self.edge_path_runner_arbiter_credit_mode}"
+            )
         self.edge_path_soft_top_k = max(int(edge_path_soft_top_k), 1)
         self.edge_path_soft_temperature = float(max(edge_path_soft_temperature, 1e-4))
         self.edge_path_soft_consistency_scale = float(edge_path_soft_consistency_scale)
         self.edge_path_soft_learned_scale = float(edge_path_soft_learned_scale)
+        self.edge_path_closure_score_scale = float(max(edge_path_closure_score_scale, 0.0))
+        self.edge_path_closure_proto_slots = max(int(edge_path_closure_proto_slots), 1)
+        self.edge_path_closure_proto_lr = float(np.clip(edge_path_closure_proto_lr, 0.0, 1.0))
+        self.edge_path_closure_proto_wrong_lr = float(
+            np.clip(edge_path_closure_proto_wrong_lr, 0.0, 1.0)
+        )
+        self.edge_path_closure_proto_score_scale = float(max(edge_path_closure_proto_score_scale, 0.0))
+        self.edge_path_closure_proto_min_count = float(max(edge_path_closure_proto_min_count, 0.0))
+        self.edge_path_affinity_slots = max(int(edge_path_affinity_slots), 1)
+        self.edge_path_affinity_lr = float(np.clip(edge_path_affinity_lr, 0.0, 1.0))
+        self.edge_path_affinity_wrong_lr = float(np.clip(edge_path_affinity_wrong_lr, 0.0, 1.0))
+        self.edge_path_affinity_score_scale = float(max(edge_path_affinity_score_scale, 0.0))
+        self.edge_path_affinity_min_count = float(max(edge_path_affinity_min_count, 0.0))
+        self.edge_path_affinity_margin_gate = float(max(edge_path_affinity_margin_gate, 0.0))
+        self.edge_path_affinity_learned_dominance = float(max(edge_path_affinity_learned_dominance, 0.0))
+        self.edge_path_affinity_consistency_protect = float(max(edge_path_affinity_consistency_protect, 0.0))
         self.edge_path_direct_answer_slots = max(int(edge_path_direct_answer_slots), 1)
         self.edge_path_direct_slots = max(int(edge_path_direct_slots), 1)
         self.edge_path_direct_lr = float(np.clip(edge_path_direct_lr, 0.0, 1.0))
         self.edge_path_direct_wrong_lr = float(np.clip(edge_path_direct_wrong_lr, 0.0, 1.0))
         self.edge_path_direct_score_scale = float(max(edge_path_direct_score_scale, 0.0))
+        self.edge_path_direct_mode = str(edge_path_direct_mode)
+        if self.edge_path_direct_mode not in self.EDGE_PATH_DIRECT_MODES:
+            raise ValueError(f"unknown edge_path_direct_mode: {self.edge_path_direct_mode}")
+        self.edge_path_structured_side_weight = float(max(edge_path_structured_side_weight, 0.0))
+        self.edge_path_structured_path_weight = float(max(edge_path_structured_path_weight, 0.0))
+        self.edge_path_structured_other_weight = float(max(edge_path_structured_other_weight, 0.0))
         self.feature_dim = self.state_dim * (1 + self.role_hops)
         rng = np.random.default_rng(seed + 15485863)
         self.token_codes = phase.normalize_rows(
@@ -1312,6 +1546,12 @@ class OnlineLocalRoleTransitionMemory:
         self.relative_codes = phase.normalize_rows(
             rng.normal(0.0, 1.0, (2 * self.role_window + 1, self.state_dim)).astype(np.float32)
         )
+        if self.edge_path_runner_arbiter_feature_mode == "rich_gaps":
+            self.edge_path_runner_arbiter_gap_codes = phase.normalize_rows(
+                rng.normal(0.0, 1.0, (4, self.state_dim)).astype(np.float32)
+            )
+        else:
+            self.edge_path_runner_arbiter_gap_codes = None
         gate_rows = self.role_hops if self.role_channel_gates else 1
         self.role_gate_weights = np.zeros((gate_rows, self.state_dim), dtype=np.float32)
         if self.role_branch_readout:
@@ -1378,6 +1618,187 @@ class OnlineLocalRoleTransitionMemory:
         self.edge_path_cleanup_checks = 0
         self.edge_path_cleanup_candidates = 0
         self.edge_path_cleanup_wins = np.zeros(self.edge_path_cleanup_answer_slots, dtype=np.int64)
+        transient_trace_size = (
+            self.vocab_size
+            if self.edge_path_transient_inhibit_key == "mid"
+            else self.edge_path_transient_inhibit_hash_size
+        )
+        self.edge_path_transient_inhibit_trace = np.zeros(
+            (self.edge_path_cleanup_answer_slots, transient_trace_size),
+            dtype=np.float32,
+        )
+        self.edge_path_transient_inhibit_updates = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_transient_boost_trace = np.zeros(
+            (self.edge_path_cleanup_answer_slots, transient_trace_size),
+            dtype=np.float32,
+        )
+        self.edge_path_transient_boost_updates = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_transient_boost_consistency_skips = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_transient_boost_learned_skips = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_transient_boost_counterfactual_skips = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        if self.edge_path_homeostasis_scale > 0.0 or self.edge_path_homeostasis_lr > 0.0:
+            self.edge_path_homeostasis_trace = np.zeros(
+                (self.edge_path_cleanup_answer_slots, transient_trace_size),
+                dtype=np.float32,
+            )
+        else:
+            self.edge_path_homeostasis_trace = None
+        self.edge_path_homeostasis_updates = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_homeostasis_gate_checks = 0
+        self.edge_path_homeostasis_gate_passes = 0
+        self.edge_path_homeostasis_gate_skips = 0
+        self.edge_path_homeostasis_soft_mod_checks = 0
+        self.edge_path_homeostasis_soft_mod_sum = 0.0
+        self.edge_path_homeostasis_soft_mod_min = 1.0
+        self.edge_path_homeostasis_soft_mod_max = 0.0
+        self.edge_path_homeostasis_trace_mod_checks = 0
+        self.edge_path_homeostasis_trace_mod_raw_sum = 0.0
+        self.edge_path_homeostasis_trace_mod_effective_sum = 0.0
+        self.edge_path_homeostasis_trace_mod_active = 0
+        self.edge_path_runner_arbiter_prototypes = np.zeros(
+            (
+                self.edge_path_cleanup_answer_slots,
+                self.edge_path_runner_arbiter_slots,
+                self.state_dim,
+            ),
+            dtype=np.float32,
+        )
+        self.edge_path_runner_arbiter_counts = np.zeros(
+            (self.edge_path_cleanup_answer_slots, self.edge_path_runner_arbiter_slots),
+            dtype=np.float32,
+        )
+        if self.edge_path_runner_arbiter_negative_mode == "separate":
+            self.edge_path_runner_arbiter_negative_prototypes = np.zeros(
+                (
+                    self.edge_path_cleanup_answer_slots,
+                    self.edge_path_runner_arbiter_slots,
+                    self.state_dim,
+                ),
+                dtype=np.float32,
+            )
+            self.edge_path_runner_arbiter_negative_counts = np.zeros(
+                (self.edge_path_cleanup_answer_slots, self.edge_path_runner_arbiter_slots),
+                dtype=np.float32,
+            )
+        else:
+            self.edge_path_runner_arbiter_negative_prototypes = None
+            self.edge_path_runner_arbiter_negative_counts = None
+        self.edge_path_runner_arbiter_updates = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_runner_arbiter_wrong_updates = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_runner_arbiter_score_checks = 0
+        self.edge_path_runner_arbiter_score_applied = 0
+        self.edge_path_runner_arbiter_score_count_skips = 0
+        if self.edge_path_closure_proto_score_scale > 0.0:
+            self.edge_path_closure_proto_positive = np.zeros(
+                (
+                    self.edge_path_cleanup_answer_slots,
+                    self.edge_path_closure_proto_slots,
+                    self.state_dim,
+                ),
+                dtype=np.float32,
+            )
+            self.edge_path_closure_proto_positive_counts = np.zeros(
+                (self.edge_path_cleanup_answer_slots, self.edge_path_closure_proto_slots),
+                dtype=np.float32,
+            )
+            self.edge_path_closure_proto_negative = np.zeros(
+                (
+                    self.edge_path_cleanup_answer_slots,
+                    self.edge_path_closure_proto_slots,
+                    self.state_dim,
+                ),
+                dtype=np.float32,
+            )
+            self.edge_path_closure_proto_negative_counts = np.zeros(
+                (self.edge_path_cleanup_answer_slots, self.edge_path_closure_proto_slots),
+                dtype=np.float32,
+            )
+        else:
+            self.edge_path_closure_proto_positive = None
+            self.edge_path_closure_proto_positive_counts = None
+            self.edge_path_closure_proto_negative = None
+            self.edge_path_closure_proto_negative_counts = None
+        self.edge_path_closure_proto_updates = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_closure_proto_wrong_updates = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_closure_proto_score_checks = 0
+        self.edge_path_closure_proto_score_applied = 0
+        self.edge_path_closure_proto_score_count_skips = 0
+        if self.edge_path_affinity_score_scale > 0.0:
+            self.edge_path_affinity_positive = np.zeros(
+                (
+                    self.edge_path_cleanup_answer_slots,
+                    self.edge_path_affinity_slots,
+                    self.EDGE_PATH_AFFINITY_FEATURE_DIM,
+                ),
+                dtype=np.float32,
+            )
+            self.edge_path_affinity_positive_counts = np.zeros(
+                (self.edge_path_cleanup_answer_slots, self.edge_path_affinity_slots),
+                dtype=np.float32,
+            )
+            self.edge_path_affinity_negative = np.zeros(
+                (
+                    self.edge_path_cleanup_answer_slots,
+                    self.edge_path_affinity_slots,
+                    self.EDGE_PATH_AFFINITY_FEATURE_DIM,
+                ),
+                dtype=np.float32,
+            )
+            self.edge_path_affinity_negative_counts = np.zeros(
+                (self.edge_path_cleanup_answer_slots, self.edge_path_affinity_slots),
+                dtype=np.float32,
+            )
+        else:
+            self.edge_path_affinity_positive = None
+            self.edge_path_affinity_positive_counts = None
+            self.edge_path_affinity_negative = None
+            self.edge_path_affinity_negative_counts = None
+        self.edge_path_affinity_updates = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_affinity_wrong_updates = np.zeros(
+            self.edge_path_cleanup_answer_slots,
+            dtype=np.int64,
+        )
+        self.edge_path_affinity_score_checks = 0
+        self.edge_path_affinity_score_applied = 0
+        self.edge_path_affinity_score_count_skips = 0
+        self.edge_path_affinity_gate_checks = 0
+        self.edge_path_affinity_gate_passes = 0
+        self.edge_path_affinity_gate_near_passes = 0
+        self.edge_path_affinity_gate_conflict_passes = 0
+        self.edge_path_affinity_gate_skips = 0
         self.edge_path_direct_prototypes = np.zeros(
             (
                 self.edge_path_direct_answer_slots,
@@ -1395,8 +1816,18 @@ class OnlineLocalRoleTransitionMemory:
         self.edge_path_direct_wrong_updates = np.zeros(self.edge_path_direct_answer_slots, dtype=np.int64)
         self.edge_path_direct_score_checks = np.zeros(self.edge_path_direct_answer_slots, dtype=np.int64)
         self.last_edge_path_direct_feature: dict[int, np.ndarray] = {}
-        self.last_edge_path_selection: dict[int, tuple[int, np.ndarray, float, float, float]] = {}
-        self.last_edge_path_runner_up: dict[int, tuple[int, np.ndarray, float, float, float]] = {}
+        self.last_edge_path_direct_feature_bundle: dict[int, list[tuple[float, np.ndarray]]] = {}
+        self.last_edge_path_selection: dict[int, tuple[int, np.ndarray, float, float, float, float, int, int]] = {}
+        self.last_edge_path_runner_up: dict[int, tuple[int, np.ndarray, float, float, float, float, int, int]] = {}
+        self.last_edge_path_selection_states: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        self.last_edge_path_runner_states: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        self.last_edge_path_candidate_count: dict[int, int] = {}
+        self.last_edge_path_trace_index: dict[int, int] = {}
+        self.last_edge_path_runner_trace_index: dict[int, int] = {}
+        self.last_edge_path_top_candidates: dict[
+            int,
+            list[tuple[int, np.ndarray, float, float, float, float]],
+        ] = {}
         self.last_role_scores = np.zeros(self.vocab_size, dtype=np.float32)
         self.last_joint_rescue_delta = np.zeros(self.vocab_size, dtype=np.float32)
         self.last_base_feature = np.zeros(self.state_dim, dtype=np.float32)
@@ -1409,6 +1840,8 @@ class OnlineLocalRoleTransitionMemory:
             + (len(self.branch_arbiter_variants) * (len(self.branch_arbiter_variants) - 1)) // 2
             + self.state_dim * len(self.branch_arbiter_variants)
         )
+        if self.role_branch_arbiter_rich_conflict_features:
+            self.branch_arbiter_feature_dim += self.state_dim + 8
         if self.role_branch_arbiter in {"local_proto", "conflict_proto"}:
             self.branch_arbiter_prototypes = np.zeros(
                 (
@@ -1715,6 +2148,343 @@ class OnlineLocalRoleTransitionMemory:
     def edge_path_direct_slot_index(self, slot: int) -> int:
         return min(max(int(slot), 0), self.edge_path_direct_answer_slots - 1)
 
+    def edge_path_direct_feature_bundle(
+        self,
+        slot: int,
+        source_state: np.ndarray,
+        destination_state: np.ndarray,
+        path_feature: np.ndarray,
+    ) -> list[tuple[float, np.ndarray]]:
+        if self.edge_path_direct_mode != "structured_scores":
+            return [(1.0, path_feature.astype(np.float32, copy=False))]
+        side_feature = source_state if int(slot) <= 0 else destination_state
+        other_feature = destination_state if int(slot) <= 0 else source_state
+        weighted_features = [
+            (self.edge_path_structured_side_weight, side_feature),
+            (self.edge_path_structured_path_weight, path_feature),
+            (self.edge_path_structured_other_weight, other_feature),
+        ]
+        weight_sum = sum(float(weight) for weight, _ in weighted_features if float(weight) > 0.0)
+        if weight_sum <= 0.0:
+            return [(1.0, path_feature.astype(np.float32, copy=False))]
+        return [
+            (float(weight) / weight_sum, feature.astype(np.float32, copy=False))
+            for weight, feature in weighted_features
+            if float(weight) > 0.0
+        ]
+
+    def edge_path_closure_score(
+        self,
+        source_state: np.ndarray,
+        destination_state: np.ndarray,
+        path_feature: np.ndarray,
+    ) -> float:
+        if self.edge_path_closure_score_scale <= 0.0:
+            return 0.0
+        return self.edge_path_raw_closure_score(source_state, destination_state, path_feature)
+
+    @staticmethod
+    def edge_path_raw_closure_score(
+        source_state: np.ndarray,
+        destination_state: np.ndarray,
+        path_feature: np.ndarray,
+    ) -> float:
+        closure_feature = phase.normalize_vector((source_state * destination_state).astype(np.float32))
+        if not np.any(closure_feature):
+            return 0.0
+        return float(max(path_feature @ closure_feature, 0.0))
+
+    def edge_path_closure_proto_feature(
+        self,
+        source_state: np.ndarray,
+        destination_state: np.ndarray,
+        path_feature: np.ndarray,
+    ) -> np.ndarray:
+        closure_feature = phase.normalize_vector((source_state * destination_state).astype(np.float32))
+        feature = (
+            path_feature.astype(np.float32, copy=False)
+            + closure_feature
+            + 0.50 * (path_feature.astype(np.float32, copy=False) * closure_feature)
+        )
+        return phase.normalize_vector(feature.astype(np.float32))
+
+    def edge_path_closure_proto_bank_score(
+        self,
+        prototypes: np.ndarray | None,
+        counts: np.ndarray | None,
+        slot_idx: int,
+        feature: np.ndarray,
+    ) -> tuple[float, float]:
+        if prototypes is None or counts is None:
+            return 0.0, 0.0
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        slot_counts = counts[slot_idx]
+        active = slot_counts > 0.0
+        if not np.any(active):
+            return 0.0, 0.0
+        dots = prototypes[slot_idx] @ feature
+        dots = np.where(active, dots, -np.inf)
+        bank_slot = int(np.argmax(dots))
+        return float(max(dots[bank_slot], 0.0)), float(slot_counts[bank_slot])
+
+    def edge_path_closure_proto_score(
+        self,
+        slot_idx: int,
+        source_state: np.ndarray,
+        destination_state: np.ndarray,
+        path_feature: np.ndarray,
+    ) -> float:
+        if self.edge_path_closure_proto_score_scale <= 0.0:
+            return 0.0
+        feature = self.edge_path_closure_proto_feature(source_state, destination_state, path_feature)
+        positive, positive_count = self.edge_path_closure_proto_bank_score(
+            self.edge_path_closure_proto_positive,
+            self.edge_path_closure_proto_positive_counts,
+            slot_idx,
+            feature,
+        )
+        negative, _ = self.edge_path_closure_proto_bank_score(
+            self.edge_path_closure_proto_negative,
+            self.edge_path_closure_proto_negative_counts,
+            slot_idx,
+            feature,
+        )
+        self.edge_path_closure_proto_score_checks += 1
+        if positive_count < self.edge_path_closure_proto_min_count:
+            self.edge_path_closure_proto_score_count_skips += 1
+            return 0.0
+        score = positive - negative
+        if score > 0.0:
+            self.edge_path_closure_proto_score_applied += 1
+        return score
+
+    def update_edge_path_closure_proto_bank(
+        self,
+        prototypes: np.ndarray | None,
+        counts: np.ndarray | None,
+        slot_idx: int,
+        feature: np.ndarray,
+        lr: float,
+    ) -> bool:
+        if prototypes is None or counts is None or lr <= 0.0:
+            return False
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        slot_counts = counts[slot_idx]
+        empty = np.flatnonzero(slot_counts <= 0.0)
+        if empty.size:
+            bank_slot = int(empty[0])
+            prototypes[slot_idx, bank_slot] = feature
+            counts[slot_idx, bank_slot] = 1.0
+            return True
+        dots = prototypes[slot_idx] @ feature
+        bank_slot = int(np.argmax(dots))
+        prototypes[slot_idx, bank_slot] = phase.normalize_vector(
+            (1.0 - lr) * prototypes[slot_idx, bank_slot] + lr * feature
+        )
+        counts[slot_idx, bank_slot] += 1.0
+        return True
+
+    def update_edge_path_closure_proto_positive(self, slot_idx: int, feature: np.ndarray) -> None:
+        if self.update_edge_path_closure_proto_bank(
+            self.edge_path_closure_proto_positive,
+            self.edge_path_closure_proto_positive_counts,
+            slot_idx,
+            feature,
+            self.edge_path_closure_proto_lr,
+        ):
+            self.edge_path_closure_proto_updates[self.edge_path_slot_index(slot_idx)] += 1
+
+    def update_edge_path_closure_proto_negative(self, slot_idx: int, feature: np.ndarray) -> None:
+        if self.update_edge_path_closure_proto_bank(
+            self.edge_path_closure_proto_negative,
+            self.edge_path_closure_proto_negative_counts,
+            slot_idx,
+            feature,
+            self.edge_path_closure_proto_wrong_lr,
+        ):
+            self.edge_path_closure_proto_wrong_updates[self.edge_path_slot_index(slot_idx)] += 1
+
+    @staticmethod
+    def bounded_edge_gap(value: float, other_value: float, scale: float = 0.25) -> float:
+        return math.tanh((float(value) - float(other_value)) / max(float(scale), 1e-6))
+
+    def edge_path_affinity_feature(
+        self,
+        support: float,
+        closure: float,
+        consistency: float,
+        learned: float,
+        max_support_other: float,
+        max_closure_other: float,
+        max_consistency_other: float,
+        max_learned_other: float,
+    ) -> np.ndarray:
+        support_b = math.tanh(float(support))
+        learned_b = math.tanh(float(learned))
+        closure_b = float(np.clip(closure, 0.0, 1.0))
+        consistency_b = float(np.clip(consistency, 0.0, 1.0))
+        support_gap = self.bounded_edge_gap(support, max_support_other)
+        closure_gap = self.bounded_edge_gap(closure, max_closure_other)
+        consistency_gap = self.bounded_edge_gap(consistency, max_consistency_other)
+        learned_gap = self.bounded_edge_gap(learned, max_learned_other)
+        feature = np.array(
+            [
+                1.0,
+                support_b,
+                closure_b,
+                consistency_b,
+                learned_b,
+                support_gap,
+                closure_gap,
+                consistency_gap,
+                learned_gap,
+                closure_gap - support_gap,
+                closure_b * consistency_b,
+                closure_b - support_b,
+            ],
+            dtype=np.float32,
+        )
+        return phase.normalize_vector(feature)
+
+    def edge_path_affinity_gate(
+        self,
+        support: float,
+        closure: float,
+        consistency: float,
+        learned: float,
+        max_support_other: float,
+        max_closure_other: float,
+        max_consistency_other: float,
+        max_learned_other: float,
+    ) -> bool:
+        if (
+            self.edge_path_affinity_margin_gate <= 0.0
+            and self.edge_path_affinity_learned_dominance <= 0.0
+        ):
+            return True
+        self.edge_path_affinity_gate_checks += 1
+        support_margin = float(support) - float(max_support_other)
+        closure_margin = float(closure) - float(max_closure_other)
+        consistency_margin = float(consistency) - float(max_consistency_other)
+        learned_margin = float(learned) - float(max_learned_other)
+        near = False
+        if self.edge_path_affinity_margin_gate > 0.0:
+            near = abs(support_margin) <= self.edge_path_affinity_margin_gate
+        protect = self.edge_path_affinity_consistency_protect
+        weak_structure = (
+            float(closure) + protect < float(max_closure_other)
+            or float(consistency) + protect < float(max_consistency_other)
+            or (
+                self.edge_path_affinity_margin_gate > 0.0
+                and float(support) + self.edge_path_affinity_margin_gate < float(max_support_other)
+            )
+        )
+        learned_dominant = (
+            self.edge_path_affinity_learned_dominance > 0.0
+            and learned_margin > 0.0
+            and learned_margin
+            >= self.edge_path_affinity_learned_dominance * max(support_margin, 0.0)
+        )
+        conflict = learned_dominant and weak_structure
+        if near or conflict:
+            self.edge_path_affinity_gate_passes += 1
+            if near:
+                self.edge_path_affinity_gate_near_passes += 1
+            if conflict:
+                self.edge_path_affinity_gate_conflict_passes += 1
+            return True
+        self.edge_path_affinity_gate_skips += 1
+        return False
+
+    def edge_path_affinity_bank_score(
+        self,
+        prototypes: np.ndarray | None,
+        counts: np.ndarray | None,
+        slot_idx: int,
+        feature: np.ndarray,
+    ) -> tuple[float, float]:
+        if prototypes is None or counts is None:
+            return 0.0, 0.0
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        slot_counts = counts[slot_idx]
+        active = slot_counts > 0.0
+        if not np.any(active):
+            return 0.0, 0.0
+        dots = prototypes[slot_idx] @ feature
+        dots = np.where(active, dots, -np.inf)
+        bank_slot = int(np.argmax(dots))
+        return float(max(dots[bank_slot], 0.0)), float(slot_counts[bank_slot])
+
+    def edge_path_affinity_score(self, slot_idx: int, feature: np.ndarray) -> float:
+        if self.edge_path_affinity_score_scale <= 0.0:
+            return 0.0
+        positive, positive_count = self.edge_path_affinity_bank_score(
+            self.edge_path_affinity_positive,
+            self.edge_path_affinity_positive_counts,
+            slot_idx,
+            feature,
+        )
+        negative, _ = self.edge_path_affinity_bank_score(
+            self.edge_path_affinity_negative,
+            self.edge_path_affinity_negative_counts,
+            slot_idx,
+            feature,
+        )
+        self.edge_path_affinity_score_checks += 1
+        if positive_count < self.edge_path_affinity_min_count:
+            self.edge_path_affinity_score_count_skips += 1
+            return 0.0
+        score = positive - negative
+        if score > 0.0:
+            self.edge_path_affinity_score_applied += 1
+        return score
+
+    def update_edge_path_affinity_bank(
+        self,
+        prototypes: np.ndarray | None,
+        counts: np.ndarray | None,
+        slot_idx: int,
+        feature: np.ndarray,
+        lr: float,
+    ) -> bool:
+        if prototypes is None or counts is None or lr <= 0.0:
+            return False
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        slot_counts = counts[slot_idx]
+        empty = np.flatnonzero(slot_counts <= 0.0)
+        if empty.size:
+            bank_slot = int(empty[0])
+            prototypes[slot_idx, bank_slot] = feature
+            counts[slot_idx, bank_slot] = 1.0
+            return True
+        dots = prototypes[slot_idx] @ feature
+        bank_slot = int(np.argmax(dots))
+        prototypes[slot_idx, bank_slot] = phase.normalize_vector(
+            (1.0 - lr) * prototypes[slot_idx, bank_slot] + lr * feature
+        )
+        counts[slot_idx, bank_slot] += 1.0
+        return True
+
+    def update_edge_path_affinity_positive(self, slot_idx: int, feature: np.ndarray) -> None:
+        if self.update_edge_path_affinity_bank(
+            self.edge_path_affinity_positive,
+            self.edge_path_affinity_positive_counts,
+            slot_idx,
+            feature,
+            self.edge_path_affinity_lr,
+        ):
+            self.edge_path_affinity_updates[self.edge_path_slot_index(slot_idx)] += 1
+
+    def update_edge_path_affinity_negative(self, slot_idx: int, feature: np.ndarray) -> None:
+        if self.update_edge_path_affinity_bank(
+            self.edge_path_affinity_negative,
+            self.edge_path_affinity_negative_counts,
+            slot_idx,
+            feature,
+            self.edge_path_affinity_wrong_lr,
+        ):
+            self.edge_path_affinity_wrong_updates[self.edge_path_slot_index(slot_idx)] += 1
+
     def anchor_edge_bundle_map(self, prefix: list[int], anchor: int) -> dict[int, tuple[np.ndarray, float]]:
         accum: dict[int, np.ndarray] = {}
         support: dict[int, float] = {}
@@ -1754,7 +2524,7 @@ class OnlineLocalRoleTransitionMemory:
     def edge_path_candidates(
         self,
         tokens: list[int],
-    ) -> list[tuple[float, int, np.ndarray, np.ndarray, np.ndarray]]:
+    ) -> list[tuple[float, int, int, int, np.ndarray, np.ndarray, np.ndarray]]:
         prefix, query = self.prefix_and_query(tokens)
         anchors = self.ordered_query_anchors(prefix, query, limit=2)
         if len(anchors) < 2:
@@ -1767,7 +2537,7 @@ class OnlineLocalRoleTransitionMemory:
             for token in source_edges
             if token in destination_edges and token not in {source, destination}
         ]
-        candidates: list[tuple[float, int, np.ndarray, np.ndarray, np.ndarray]] = []
+        candidates: list[tuple[float, int, int, int, np.ndarray, np.ndarray, np.ndarray]] = []
         for mid in shared:
             source_feature, source_strength = source_edges[int(mid)]
             destination_feature, destination_strength = destination_edges[int(mid)]
@@ -1777,8 +2547,18 @@ class OnlineLocalRoleTransitionMemory:
             path_feature = phase.normalize_vector(
                 source_feature * destination_feature * self.token_codes[int(mid)]
             )
-            candidates.append((support, int(mid), source_state, destination_state, path_feature))
-        candidates.sort(key=lambda item: (-float(item[0]), int(item[1])))
+            candidates.append(
+                (
+                    support,
+                    int(source),
+                    int(mid),
+                    int(destination),
+                    source_state,
+                    destination_state,
+                    path_feature,
+                )
+            )
+        candidates.sort(key=lambda item: (-float(item[0]), int(item[2])))
         return candidates
 
     def edge_path_cleanup_score(self, slot_idx: int, mid: int, path_feature: np.ndarray) -> float:
@@ -1790,18 +2570,719 @@ class OnlineLocalRoleTransitionMemory:
         dots = np.where(active, dots, -np.inf)
         return float(np.max(dots))
 
+    def edge_path_runner_arbiter_feature(
+        self,
+        selected_mid: int,
+        selected_feature: np.ndarray,
+        runner_mid: int,
+        runner_feature: np.ndarray,
+        selected_score: float | None = None,
+        selected_support: float | None = None,
+        selected_learned: float | None = None,
+        selected_consistency: float | None = None,
+        runner_score: float | None = None,
+        runner_support: float | None = None,
+        runner_learned: float | None = None,
+        runner_consistency: float | None = None,
+    ) -> np.ndarray:
+        selected_mid = int(selected_mid)
+        runner_mid = int(runner_mid)
+        feature = (
+            runner_feature
+            + 0.50 * (runner_feature - selected_feature)
+            + 0.25 * (runner_feature * selected_feature)
+            + 0.25 * (self.token_codes[runner_mid] - self.token_codes[selected_mid])
+        )
+        if (
+            self.edge_path_runner_arbiter_feature_mode == "rich_gaps"
+            and self.edge_path_runner_arbiter_gap_codes is not None
+            and self.edge_path_runner_arbiter_gap_scale > 0.0
+        ):
+            gap_pairs = (
+                (runner_score, selected_score),
+                (runner_support, selected_support),
+                (runner_learned, selected_learned),
+                (runner_consistency, selected_consistency),
+            )
+            gap_feature = np.zeros(self.state_dim, dtype=np.float32)
+            for idx, (runner_value, selected_value) in enumerate(gap_pairs):
+                if runner_value is None or selected_value is None:
+                    continue
+                gap_value = math.tanh((float(runner_value) - float(selected_value)) / 0.25)
+                gap_feature = gap_feature + gap_value * self.edge_path_runner_arbiter_gap_codes[idx]
+            feature = feature + self.edge_path_runner_arbiter_gap_scale * gap_feature
+        return phase.normalize_vector(feature.astype(np.float32))
+
+    def edge_path_runner_arbiter_positive_score(
+        self,
+        slot_idx: int,
+        pair_feature: np.ndarray,
+    ) -> tuple[float, float]:
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        counts = self.edge_path_runner_arbiter_counts[slot_idx]
+        active = counts > 0.0
+        if not np.any(active):
+            return 0.0, 0.0
+        dots = self.edge_path_runner_arbiter_prototypes[slot_idx] @ pair_feature
+        dots = np.where(active, dots, -np.inf)
+        bank_slot = int(np.argmax(dots))
+        return float(dots[bank_slot]), float(counts[bank_slot])
+
+    def edge_path_runner_arbiter_negative_score(self, slot_idx: int, pair_feature: np.ndarray) -> float:
+        if (
+            self.edge_path_runner_arbiter_negative_prototypes is None
+            or self.edge_path_runner_arbiter_negative_counts is None
+        ):
+            return 0.0
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        counts = self.edge_path_runner_arbiter_negative_counts[slot_idx]
+        active = counts > 0.0
+        if not np.any(active):
+            return 0.0
+        dots = self.edge_path_runner_arbiter_negative_prototypes[slot_idx] @ pair_feature
+        dots = np.where(active, dots, -np.inf)
+        return float(max(np.max(dots), 0.0))
+
+    def edge_path_runner_arbiter_score(
+        self,
+        slot_idx: int,
+        pair_feature: np.ndarray,
+    ) -> tuple[float, float, float]:
+        positive_score, positive_count = self.edge_path_runner_arbiter_positive_score(
+            slot_idx,
+            pair_feature,
+        )
+        negative_score = self.edge_path_runner_arbiter_negative_score(slot_idx, pair_feature)
+        return positive_score - negative_score, positive_count, negative_score
+
+    def update_edge_path_runner_arbiter_target(self, slot_idx: int, pair_feature: np.ndarray) -> None:
+        if self.edge_path_runner_arbiter_lr <= 0.0:
+            return
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        counts = self.edge_path_runner_arbiter_counts[slot_idx]
+        empty = np.flatnonzero(counts <= 0.0)
+        if empty.size:
+            bank_slot = int(empty[0])
+            self.edge_path_runner_arbiter_prototypes[slot_idx, bank_slot] = pair_feature
+            self.edge_path_runner_arbiter_counts[slot_idx, bank_slot] = 1.0
+            self.edge_path_runner_arbiter_updates[slot_idx] += 1
+            return
+        dots = self.edge_path_runner_arbiter_prototypes[slot_idx] @ pair_feature
+        bank_slot = int(np.argmax(dots))
+        self.edge_path_runner_arbiter_prototypes[slot_idx, bank_slot] = phase.normalize_vector(
+            (1.0 - self.edge_path_runner_arbiter_lr)
+            * self.edge_path_runner_arbiter_prototypes[slot_idx, bank_slot]
+            + self.edge_path_runner_arbiter_lr * pair_feature
+        )
+        self.edge_path_runner_arbiter_counts[slot_idx, bank_slot] += 1.0
+        self.edge_path_runner_arbiter_updates[slot_idx] += 1
+
+    def update_edge_path_runner_arbiter_negative(self, slot_idx: int, pair_feature: np.ndarray) -> None:
+        if (
+            self.edge_path_runner_arbiter_wrong_lr <= 0.0
+            or self.edge_path_runner_arbiter_negative_prototypes is None
+            or self.edge_path_runner_arbiter_negative_counts is None
+        ):
+            return
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        counts = self.edge_path_runner_arbiter_negative_counts[slot_idx]
+        empty = np.flatnonzero(counts <= 0.0)
+        if empty.size:
+            bank_slot = int(empty[0])
+            self.edge_path_runner_arbiter_negative_prototypes[slot_idx, bank_slot] = pair_feature
+            self.edge_path_runner_arbiter_negative_counts[slot_idx, bank_slot] = 1.0
+            self.edge_path_runner_arbiter_wrong_updates[slot_idx] += 1
+            return
+        dots = self.edge_path_runner_arbiter_negative_prototypes[slot_idx] @ pair_feature
+        bank_slot = int(np.argmax(dots))
+        self.edge_path_runner_arbiter_negative_prototypes[slot_idx, bank_slot] = phase.normalize_vector(
+            (1.0 - self.edge_path_runner_arbiter_wrong_lr)
+            * self.edge_path_runner_arbiter_negative_prototypes[slot_idx, bank_slot]
+            + self.edge_path_runner_arbiter_wrong_lr * pair_feature
+        )
+        self.edge_path_runner_arbiter_negative_counts[slot_idx, bank_slot] += 1.0
+        self.edge_path_runner_arbiter_wrong_updates[slot_idx] += 1
+
+    def suppress_edge_path_runner_arbiter(self, slot_idx: int, pair_feature: np.ndarray) -> None:
+        if self.edge_path_runner_arbiter_wrong_lr <= 0.0:
+            return
+        if self.edge_path_runner_arbiter_negative_mode == "separate":
+            self.update_edge_path_runner_arbiter_negative(slot_idx, pair_feature)
+            return
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        counts = self.edge_path_runner_arbiter_counts[slot_idx]
+        active = counts > 0.0
+        if not np.any(active):
+            return
+        dots = self.edge_path_runner_arbiter_prototypes[slot_idx] @ pair_feature
+        dots = np.where(active, dots, -np.inf)
+        bank_slot = int(np.argmax(dots))
+        if float(dots[bank_slot]) <= 0.0:
+            return
+        self.edge_path_runner_arbiter_prototypes[slot_idx, bank_slot] = phase.normalize_vector(
+            self.edge_path_runner_arbiter_prototypes[slot_idx, bank_slot]
+            - self.edge_path_runner_arbiter_wrong_lr * pair_feature
+        )
+        self.edge_path_runner_arbiter_wrong_updates[slot_idx] += 1
+
+    def apply_edge_path_runner_arbiter(
+        self,
+        slot_idx: int,
+        ranked: list[tuple[float, float, float, float, int, int, int, int, np.ndarray, np.ndarray, np.ndarray]],
+    ) -> list[tuple[float, float, float, float, int, int, int, int, np.ndarray, np.ndarray, np.ndarray]]:
+        if self.edge_path_runner_arbiter_score_scale <= 0.0 or len(ranked) < 2:
+            return ranked
+        if not np.any(self.edge_path_runner_arbiter_counts[self.edge_path_slot_index(slot_idx)] > 0.0):
+            return ranked
+        selected = ranked[0]
+        runner = ranked[1]
+        pair_feature = self.edge_path_runner_arbiter_feature(
+            int(selected[4]),
+            selected[10],
+            int(runner[4]),
+            runner[10],
+            selected_score=float(selected[0]),
+            selected_support=float(selected[1]),
+            selected_learned=float(selected[3]),
+            selected_consistency=float(selected[2]),
+            runner_score=float(runner[0]),
+            runner_support=float(runner[1]),
+            runner_learned=float(runner[3]),
+            runner_consistency=float(runner[2]),
+        )
+        arbiter_score, arbiter_count, _ = self.edge_path_runner_arbiter_score(slot_idx, pair_feature)
+        self.edge_path_runner_arbiter_score_checks += 1
+        if arbiter_count < self.edge_path_runner_arbiter_min_count:
+            self.edge_path_runner_arbiter_score_count_skips += 1
+            return ranked
+        if arbiter_score <= self.edge_path_runner_arbiter_margin:
+            return ranked
+        adjusted = list(ranked)
+        runner_item = list(adjusted[1])
+        runner_item[0] = float(runner_item[0]) + self.edge_path_runner_arbiter_score_scale * (
+            arbiter_score - self.edge_path_runner_arbiter_margin
+        )
+        adjusted[1] = tuple(runner_item)  # type: ignore[list-item]
+        adjusted.sort(key=lambda item: (-float(item[0]), -float(item[1]), int(item[4])))
+        self.edge_path_runner_arbiter_score_applied += 1
+        return adjusted
+
+    def edge_path_transient_trace_index(
+        self,
+        mid: int,
+        path_feature: np.ndarray,
+        source_anchor: int | None = None,
+        destination_anchor: int | None = None,
+    ) -> int:
+        if self.edge_path_transient_inhibit_key == "mid":
+            return int(mid)
+        if self.edge_path_transient_inhibit_key == "anchor_path":
+            source = int(source_anchor) if source_anchor is not None else 0
+            destination = int(destination_anchor) if destination_anchor is not None else 0
+            h = 2166136261
+            for value in (source, int(mid), destination):
+                h ^= int(value) & 0xFFFFFFFF
+                h = (h * 16777619) & 0xFFFFFFFF
+            return int(h % self.edge_path_transient_inhibit_hash_size)
+        values = np.asarray(path_feature, dtype=np.float32)
+        if values.size == 0:
+            return int(mid) % self.edge_path_transient_inhibit_hash_size
+        top_k = min(4, values.size)
+        indices = np.argpartition(np.abs(values), -top_k)[-top_k:]
+        indices = indices[np.argsort(-np.abs(values[indices]))]
+        h = (2166136261 ^ int(mid)) & 0xFFFFFFFF
+        for idx in indices:
+            sign_bit = 1 if float(values[int(idx)]) >= 0.0 else 0
+            h ^= ((int(idx) + 1) * 16777619) ^ sign_bit
+            h = (h * 16777619) & 0xFFFFFFFF
+        return int(h % self.edge_path_transient_inhibit_hash_size)
+
+    def edge_path_homeostasis_gate(
+        self,
+        support: float,
+        closure: float,
+        consistency: float,
+        learned: float,
+        max_support_other: float,
+        max_closure_other: float,
+        max_consistency_other: float,
+        max_learned_other: float,
+    ) -> bool:
+        if self.edge_path_homeostasis_learned_dominance <= 0.0:
+            return True
+        self.edge_path_homeostasis_gate_checks += 1
+        support_margin = float(support) - float(max_support_other)
+        closure_margin = float(closure) - float(max_closure_other)
+        consistency_margin = float(consistency) - float(max_consistency_other)
+        learned_margin = float(learned) - float(max_learned_other)
+        learned_dominant = (
+            learned_margin > 0.0
+            and learned_margin
+            >= self.edge_path_homeostasis_learned_dominance * max(support_margin, 0.0)
+        )
+        weak_structure = (
+            support_margin <= self.edge_path_homeostasis_structure_margin
+            or closure_margin <= self.edge_path_homeostasis_structure_margin
+            or consistency_margin <= self.edge_path_homeostasis_structure_margin
+        )
+        if learned_dominant and weak_structure:
+            self.edge_path_homeostasis_gate_passes += 1
+            return True
+        self.edge_path_homeostasis_gate_skips += 1
+        return False
+
+    def edge_path_homeostasis_hard_gate_enabled(self) -> bool:
+        return (
+            self.edge_path_homeostasis_learned_dominance > 0.0
+            and self.edge_path_homeostasis_soft_mod_scale <= 0.0
+        )
+
+    def edge_path_homeostasis_soft_multiplier(
+        self,
+        support: float,
+        closure: float,
+        consistency: float,
+        learned: float,
+        max_support_other: float,
+        max_closure_other: float,
+        max_consistency_other: float,
+        max_learned_other: float,
+    ) -> float:
+        if (
+            self.edge_path_homeostasis_soft_mod_scale <= 0.0
+            or self.edge_path_homeostasis_soft_mod_floor >= 1.0
+        ):
+            return 1.0
+        support_margin = float(support) - float(max_support_other)
+        closure_margin = float(closure) - float(max_closure_other)
+        consistency_margin = float(consistency) - float(max_consistency_other)
+        learned_margin = float(learned) - float(max_learned_other)
+        structure_deficit = max(
+            0.0,
+            self.edge_path_homeostasis_structure_margin - support_margin,
+            self.edge_path_homeostasis_structure_margin - closure_margin,
+            self.edge_path_homeostasis_structure_margin - consistency_margin,
+        )
+        if self.edge_path_homeostasis_learned_dominance > 0.0:
+            learned_excess = max(
+                0.0,
+                learned_margin
+                - self.edge_path_homeostasis_learned_dominance * max(support_margin, 0.0),
+            )
+        else:
+            learned_excess = max(0.0, learned_margin)
+        raw_pressure = self.edge_path_homeostasis_soft_mod_scale * (
+            structure_deficit + learned_excess
+        )
+        pressure = raw_pressure / (1.0 + raw_pressure) if raw_pressure > 0.0 else 0.0
+        multiplier = self.edge_path_homeostasis_soft_mod_floor + (
+            1.0 - self.edge_path_homeostasis_soft_mod_floor
+        ) * pressure
+        multiplier = float(np.clip(multiplier, 0.0, 1.0))
+        self.edge_path_homeostasis_soft_mod_checks += 1
+        self.edge_path_homeostasis_soft_mod_sum += multiplier
+        self.edge_path_homeostasis_soft_mod_min = min(
+            self.edge_path_homeostasis_soft_mod_min,
+            multiplier,
+        )
+        self.edge_path_homeostasis_soft_mod_max = max(
+            self.edge_path_homeostasis_soft_mod_max,
+            multiplier,
+        )
+        return multiplier
+
+    def edge_path_homeostasis_effective_trace(self, trace_value: float) -> float:
+        value = float(np.clip(trace_value, 0.0, 1.0))
+        if (
+            self.edge_path_homeostasis_trace_threshold <= 0.0
+            and abs(self.edge_path_homeostasis_trace_gain - 1.0) <= 1e-12
+        ):
+            return value
+        if self.edge_path_homeostasis_trace_threshold > 0.0:
+            denom = max(1.0 - self.edge_path_homeostasis_trace_threshold, 1e-6)
+            effective = max(0.0, value - self.edge_path_homeostasis_trace_threshold) / denom
+        else:
+            effective = value
+        effective = float(np.clip(effective * self.edge_path_homeostasis_trace_gain, 0.0, 1.0))
+        self.edge_path_homeostasis_trace_mod_checks += 1
+        self.edge_path_homeostasis_trace_mod_raw_sum += value
+        self.edge_path_homeostasis_trace_mod_effective_sum += effective
+        if effective > 0.0:
+            self.edge_path_homeostasis_trace_mod_active += 1
+        return effective
+
+    def edge_path_homeostasis_penalty(
+        self,
+        slot_idx: int,
+        trace_idx: int,
+        support: float,
+        closure: float,
+        consistency: float,
+        learned: float,
+        max_support_other: float,
+        max_closure_other: float,
+        max_consistency_other: float,
+        max_learned_other: float,
+    ) -> float:
+        if (
+            self.edge_path_homeostasis_trace is None
+            or self.edge_path_homeostasis_scale <= 0.0
+            or int(slot_idx) < self.edge_path_homeostasis_min_slot
+        ):
+            return 0.0
+        if self.edge_path_homeostasis_hard_gate_enabled() and not self.edge_path_homeostasis_gate(
+            support,
+            closure,
+            consistency,
+            learned,
+            max_support_other,
+            max_closure_other,
+            max_consistency_other,
+            max_learned_other,
+        ):
+            return 0.0
+        multiplier = self.edge_path_homeostasis_soft_multiplier(
+            support,
+            closure,
+            consistency,
+            learned,
+            max_support_other,
+            max_closure_other,
+            max_consistency_other,
+            max_learned_other,
+        )
+        trace_value = float(
+            self.edge_path_homeostasis_trace[self.edge_path_slot_index(slot_idx), int(trace_idx)]
+        )
+        return (
+            self.edge_path_homeostasis_scale
+            * self.edge_path_homeostasis_effective_trace(trace_value)
+            * multiplier
+        )
+
+    def update_edge_path_homeostasis(self, slot_idx: int, trace_idx: int, weight: float = 1.0) -> None:
+        if (
+            self.edge_path_homeostasis_trace is None
+            or self.edge_path_homeostasis_lr <= 0.0
+            or int(slot_idx) < self.edge_path_homeostasis_min_slot
+        ):
+            return
+        slot_idx = self.edge_path_slot_index(slot_idx)
+        if self.edge_path_homeostasis_decay < 1.0:
+            self.edge_path_homeostasis_trace[slot_idx] *= self.edge_path_homeostasis_decay
+        delta = self.edge_path_homeostasis_lr * float(max(weight, 0.0))
+        if delta <= 0.0:
+            return
+        trace_idx = int(trace_idx)
+        current = float(self.edge_path_homeostasis_trace[slot_idx, trace_idx])
+        self.edge_path_homeostasis_trace[slot_idx, trace_idx] = min(current + delta, 1.0)
+        self.edge_path_homeostasis_updates[slot_idx] += 1
+
     def edge_path_ranked_candidates(
         self,
         tokens: list[int],
         slot: int,
-    ) -> list[tuple[float, float, float, int, np.ndarray, np.ndarray, np.ndarray]]:
+    ) -> list[tuple[float, float, float, float, int, int, int, int, np.ndarray, np.ndarray, np.ndarray]]:
         slot_idx = self.edge_path_slot_index(slot)
-        ranked: list[tuple[float, float, float, int, np.ndarray, np.ndarray, np.ndarray]] = []
-        for support, mid, source_state, destination_state, path_feature in self.edge_path_candidates(tokens):
+        raw_candidates: list[
+            tuple[float, float, float, float, int, int, int, int, np.ndarray, np.ndarray, np.ndarray]
+        ] = []
+        for (
+            support,
+            source_anchor,
+            mid,
+            destination_anchor,
+            source_state,
+            destination_state,
+            path_feature,
+        ) in self.edge_path_candidates(tokens):
             learned = self.edge_path_cleanup_score(slot_idx, mid, path_feature)
-            score = float(support + self.edge_path_cleanup_score_scale * learned)
-            ranked.append((score, float(support), float(learned), int(mid), source_state, destination_state, path_feature))
-        ranked.sort(key=lambda item: (-float(item[0]), -float(item[1]), int(item[3])))
+            consistency = max(float(source_state @ destination_state), 0.0)
+            trace_idx = self.edge_path_transient_trace_index(
+                int(mid),
+                path_feature,
+                int(source_anchor),
+                int(destination_anchor),
+            )
+            closure = self.edge_path_raw_closure_score(source_state, destination_state, path_feature)
+            raw_candidates.append(
+                (
+                    float(support),
+                    float(consistency),
+                    float(learned),
+                    float(closure),
+                    int(trace_idx),
+                    int(source_anchor),
+                    int(mid),
+                    int(destination_anchor),
+                    source_state,
+                    destination_state,
+                    path_feature,
+                )
+            )
+        if not raw_candidates:
+            return []
+        support_values = [float(item[0]) for item in raw_candidates]
+        consistency_values = [float(item[1]) for item in raw_candidates]
+        learned_values = [float(item[2]) for item in raw_candidates]
+        closure_values = [float(item[3]) for item in raw_candidates]
+
+        def max_other(values: list[float], idx: int) -> float:
+            if len(values) <= 1:
+                return 0.0
+            return max(float(value) for j, value in enumerate(values) if j != idx)
+
+        ranked: list[
+            tuple[float, float, float, float, int, int, int, int, np.ndarray, np.ndarray, np.ndarray]
+        ] = []
+        for idx, (
+            support,
+            consistency,
+            learned,
+            closure,
+            trace_idx,
+            source_anchor,
+            mid,
+            destination_anchor,
+            source_state,
+            destination_state,
+            path_feature,
+        ) in enumerate(raw_candidates):
+            closure_proto = self.edge_path_closure_proto_score(
+                slot_idx,
+                source_state,
+                destination_state,
+                path_feature,
+            )
+            max_support_other = max_other(support_values, idx)
+            max_closure_other = max_other(closure_values, idx)
+            max_consistency_other = max_other(consistency_values, idx)
+            max_learned_other = max_other(learned_values, idx)
+            affinity = 0.0
+            if self.edge_path_affinity_gate(
+                float(support),
+                float(closure),
+                float(consistency),
+                float(learned),
+                max_support_other,
+                max_closure_other,
+                max_consistency_other,
+                max_learned_other,
+            ):
+                affinity_feature = self.edge_path_affinity_feature(
+                    float(support),
+                    float(closure),
+                    float(consistency),
+                    float(learned),
+                    max_support_other,
+                    max_closure_other,
+                    max_consistency_other,
+                    max_learned_other,
+                )
+                affinity = self.edge_path_affinity_score(slot_idx, affinity_feature)
+            inhibit = 0.0
+            if self.edge_path_transient_inhibit_scale > 0.0:
+                inhibit = self.edge_path_transient_inhibit_scale * float(
+                    self.edge_path_transient_inhibit_trace[slot_idx, int(trace_idx)]
+                )
+            boost = 0.0
+            if self.edge_path_transient_boost_scale > 0.0:
+                boost = self.edge_path_transient_boost_scale * float(
+                    self.edge_path_transient_boost_trace[slot_idx, int(trace_idx)]
+                )
+            homeostasis = self.edge_path_homeostasis_penalty(
+                slot_idx,
+                int(trace_idx),
+                float(support),
+                float(closure),
+                float(consistency),
+                float(learned),
+                max_support_other,
+                max_closure_other,
+                max_consistency_other,
+                max_learned_other,
+            )
+            score = float(
+                support
+                + self.edge_path_cleanup_score_scale * learned
+                + self.edge_path_closure_score_scale * closure
+                + self.edge_path_closure_proto_score_scale * closure_proto
+                + self.edge_path_affinity_score_scale * affinity
+                - inhibit
+                - homeostasis
+                + boost
+            )
+            ranked.append(
+                (
+                    score,
+                    float(support),
+                    float(consistency),
+                    float(learned),
+                    int(mid),
+                    int(trace_idx),
+                    int(source_anchor),
+                    int(destination_anchor),
+                    source_state,
+                    destination_state,
+                    path_feature,
+                )
+            )
+        ranked.sort(key=lambda item: (-float(item[0]), -float(item[1]), int(item[4])))
+        ranked = self.apply_edge_path_runner_arbiter(slot_idx, ranked)
+        return ranked
+
+    def edge_path_soft_ranked_candidates(
+        self,
+        tokens: list[int],
+        slot: int,
+    ) -> list[tuple[float, float, float, float, int, int, int, int, np.ndarray, np.ndarray, np.ndarray]]:
+        slot_idx = self.edge_path_slot_index(slot)
+        raw_candidates: list[
+            tuple[float, float, float, float, int, int, int, int, np.ndarray, np.ndarray, np.ndarray]
+        ] = []
+        for (
+            support,
+            source_anchor,
+            mid,
+            destination_anchor,
+            source_state,
+            destination_state,
+            path_feature,
+        ) in self.edge_path_candidates(tokens):
+            learned = self.edge_path_cleanup_score(slot_idx, mid, path_feature)
+            consistency = max(float(source_state @ destination_state), 0.0)
+            trace_idx = self.edge_path_transient_trace_index(
+                int(mid),
+                path_feature,
+                int(source_anchor),
+                int(destination_anchor),
+            )
+            closure = self.edge_path_raw_closure_score(source_state, destination_state, path_feature)
+            raw_candidates.append(
+                (
+                    float(support),
+                    float(consistency),
+                    float(learned),
+                    float(closure),
+                    int(trace_idx),
+                    int(source_anchor),
+                    int(mid),
+                    int(destination_anchor),
+                    source_state,
+                    destination_state,
+                    path_feature,
+                )
+            )
+        if not raw_candidates:
+            return []
+        support_values = [float(item[0]) for item in raw_candidates]
+        consistency_values = [float(item[1]) for item in raw_candidates]
+        learned_values = [float(item[2]) for item in raw_candidates]
+        closure_values = [float(item[3]) for item in raw_candidates]
+
+        def max_other(values: list[float], idx: int) -> float:
+            if len(values) <= 1:
+                return 0.0
+            return max(float(value) for j, value in enumerate(values) if j != idx)
+
+        ranked: list[
+            tuple[float, float, float, float, int, int, int, int, np.ndarray, np.ndarray, np.ndarray]
+        ] = []
+        for idx, (
+            support,
+            consistency,
+            learned,
+            closure,
+            trace_idx,
+            source_anchor,
+            mid,
+            destination_anchor,
+            source_state,
+            destination_state,
+            path_feature,
+        ) in enumerate(raw_candidates):
+            closure_proto = self.edge_path_closure_proto_score(
+                slot_idx,
+                source_state,
+                destination_state,
+                path_feature,
+            )
+            max_support_other = max_other(support_values, idx)
+            max_closure_other = max_other(closure_values, idx)
+            max_consistency_other = max_other(consistency_values, idx)
+            max_learned_other = max_other(learned_values, idx)
+            affinity = 0.0
+            if self.edge_path_affinity_gate(
+                float(support),
+                float(closure),
+                float(consistency),
+                float(learned),
+                max_support_other,
+                max_closure_other,
+                max_consistency_other,
+                max_learned_other,
+            ):
+                affinity_feature = self.edge_path_affinity_feature(
+                    float(support),
+                    float(closure),
+                    float(consistency),
+                    float(learned),
+                    max_support_other,
+                    max_closure_other,
+                    max_consistency_other,
+                    max_learned_other,
+                )
+                affinity = self.edge_path_affinity_score(slot_idx, affinity_feature)
+            inhibit = 0.0
+            if self.edge_path_transient_inhibit_scale > 0.0:
+                inhibit = self.edge_path_transient_inhibit_scale * float(
+                    self.edge_path_transient_inhibit_trace[slot_idx, int(trace_idx)]
+                )
+            boost = 0.0
+            if self.edge_path_transient_boost_scale > 0.0:
+                boost = self.edge_path_transient_boost_scale * float(
+                    self.edge_path_transient_boost_trace[slot_idx, int(trace_idx)]
+                )
+            homeostasis = self.edge_path_homeostasis_penalty(
+                slot_idx,
+                int(trace_idx),
+                float(support),
+                float(closure),
+                float(consistency),
+                float(learned),
+                max_support_other,
+                max_closure_other,
+                max_consistency_other,
+                max_learned_other,
+            )
+            score = (
+                float(support)
+                + self.edge_path_soft_consistency_scale * consistency
+                + self.edge_path_soft_learned_scale * learned
+                + self.edge_path_closure_score_scale * closure
+                + self.edge_path_closure_proto_score_scale * closure_proto
+                + self.edge_path_affinity_score_scale * affinity
+                - inhibit
+                - homeostasis
+                + boost
+            )
+            ranked.append(
+                (
+                    float(score),
+                    float(support),
+                    float(consistency),
+                    float(learned),
+                    int(mid),
+                    int(trace_idx),
+                    int(source_anchor),
+                    int(destination_anchor),
+                    source_state,
+                    destination_state,
+                    path_feature,
+                )
+            )
+        ranked.sort(key=lambda item: (-float(item[0]), -float(item[1]), int(item[4])))
+        ranked = self.apply_edge_path_runner_arbiter(slot_idx, ranked)
         return ranked
 
     def edge_path_wta_state(self, tokens: list[int], slot: int) -> np.ndarray:
@@ -1809,34 +3290,98 @@ class OnlineLocalRoleTransitionMemory:
         ranked = self.edge_path_ranked_candidates(tokens, slot_idx)
         self.edge_path_cleanup_checks += 1
         self.edge_path_cleanup_candidates += len(ranked)
+        self.last_edge_path_candidate_count[slot_idx] = len(ranked)
         self.last_edge_path_selection.pop(slot_idx, None)
         self.last_edge_path_runner_up.pop(slot_idx, None)
-        self.last_edge_path_direct_feature.pop(self.edge_path_direct_slot_index(slot), None)
+        self.last_edge_path_trace_index.pop(slot_idx, None)
+        self.last_edge_path_runner_trace_index.pop(slot_idx, None)
+        self.last_edge_path_top_candidates.pop(slot_idx, None)
+        self.last_edge_path_selection_states.pop(slot_idx, None)
+        self.last_edge_path_runner_states.pop(slot_idx, None)
+        direct_slot = self.edge_path_direct_slot_index(slot)
+        self.last_edge_path_direct_feature.pop(direct_slot, None)
+        self.last_edge_path_direct_feature_bundle.pop(direct_slot, None)
         if not ranked:
             return np.zeros(self.state_dim, dtype=np.float32)
-        score, support, learned, mid, source_state, destination_state, path_feature = ranked[0]
+        (
+            score,
+            support,
+            consistency,
+            learned,
+            mid,
+            trace_idx,
+            source_anchor,
+            destination_anchor,
+            source_state,
+            destination_state,
+            path_feature,
+        ) = ranked[0]
+        self.last_edge_path_trace_index[slot_idx] = int(trace_idx)
         self.last_edge_path_selection[slot_idx] = (
             int(mid),
             path_feature.astype(np.float32, copy=True),
             float(score),
             float(support),
             float(learned),
+            float(consistency),
+            int(source_anchor),
+            int(destination_anchor),
+        )
+        self.last_edge_path_selection_states[slot_idx] = (
+            source_state.astype(np.float32, copy=True),
+            destination_state.astype(np.float32, copy=True),
+        )
+        self.last_edge_path_direct_feature_bundle[direct_slot] = self.edge_path_direct_feature_bundle(
+            int(slot),
+            source_state,
+            destination_state,
+            path_feature,
         )
         self.edge_path_cleanup_wins[slot_idx] += 1
         if len(ranked) > 1:
-            r_score, r_support, r_learned, r_mid, _, _, r_path_feature = ranked[1]
+            (
+                r_score,
+                r_support,
+                r_consistency,
+                r_learned,
+                r_mid,
+                r_trace_idx,
+                r_source_anchor,
+                r_destination_anchor,
+                _,
+                _,
+                r_path_feature,
+            ) = ranked[1]
+            self.last_edge_path_runner_trace_index[slot_idx] = int(r_trace_idx)
             self.last_edge_path_runner_up[slot_idx] = (
                 int(r_mid),
                 r_path_feature.astype(np.float32, copy=True),
                 float(r_score),
                 float(r_support),
                 float(r_learned),
+                float(r_consistency),
+                int(r_source_anchor),
+                int(r_destination_anchor),
             )
+            self.last_edge_path_runner_states[slot_idx] = (
+                ranked[1][8].astype(np.float32, copy=True),
+                ranked[1][9].astype(np.float32, copy=True),
+            )
+        self.last_edge_path_top_candidates[slot_idx] = [
+            (
+                int(mid),
+                path_feature.astype(np.float32, copy=True),
+                float(score),
+                float(support),
+                float(learned),
+                1.0,
+            )
+        ]
         top_k = min(max(self.edge_path_cleanup_top_k, 1), len(ranked))
         max_score = float(ranked[0][0])
         state = np.zeros(self.state_dim, dtype=np.float32)
         weight_sum = 0.0
-        for cand_score, cand_support, _, _, cand_source, cand_destination, _ in ranked[:top_k]:
+        for cand_score, cand_support, _, _, _, _, _, _, cand_source, cand_destination, _ in ranked[:top_k]:
             inhibited = max_score - float(cand_score)
             weight = float(cand_support + max(float(cand_score), 0.0))
             if self.edge_path_cleanup_inhibit > 0.0:
@@ -1851,51 +3396,60 @@ class OnlineLocalRoleTransitionMemory:
 
     def edge_path_soft_state(self, tokens: list[int], slot: int) -> np.ndarray:
         slot_idx = self.edge_path_slot_index(slot)
-        ranked: list[tuple[float, float, float, float, int, np.ndarray, np.ndarray, np.ndarray]] = []
-        for support, mid, source_state, destination_state, path_feature in self.edge_path_candidates(tokens):
-            learned = self.edge_path_cleanup_score(slot_idx, mid, path_feature)
-            consistency = max(float(source_state @ destination_state), 0.0)
-            score = (
-                float(support)
-                + self.edge_path_soft_consistency_scale * consistency
-                + self.edge_path_soft_learned_scale * learned
-            )
-            ranked.append(
-                (
-                    float(score),
-                    float(support),
-                    float(consistency),
-                    float(learned),
-                    int(mid),
-                    source_state,
-                    destination_state,
-                    path_feature,
-                )
-            )
-        ranked.sort(key=lambda item: (-float(item[0]), -float(item[1]), int(item[4])))
+        ranked = self.edge_path_soft_ranked_candidates(tokens, slot_idx)
         self.edge_path_cleanup_checks += 1
         self.edge_path_cleanup_candidates += len(ranked)
+        self.last_edge_path_candidate_count[slot_idx] = len(ranked)
         self.last_edge_path_selection.pop(slot_idx, None)
         self.last_edge_path_runner_up.pop(slot_idx, None)
+        self.last_edge_path_trace_index.pop(slot_idx, None)
+        self.last_edge_path_runner_trace_index.pop(slot_idx, None)
+        self.last_edge_path_top_candidates.pop(slot_idx, None)
+        self.last_edge_path_selection_states.pop(slot_idx, None)
+        self.last_edge_path_runner_states.pop(slot_idx, None)
+        direct_slot = self.edge_path_direct_slot_index(slot)
+        self.last_edge_path_direct_feature_bundle.pop(direct_slot, None)
         if not ranked:
             return np.zeros(self.state_dim, dtype=np.float32)
         best = ranked[0]
+        self.last_edge_path_trace_index[slot_idx] = int(best[5])
         self.last_edge_path_selection[slot_idx] = (
             int(best[4]),
-            best[7].astype(np.float32, copy=True),
+            best[10].astype(np.float32, copy=True),
             float(best[0]),
             float(best[1]),
             float(best[3]),
+            float(best[2]),
+            int(best[6]),
+            int(best[7]),
+        )
+        self.last_edge_path_selection_states[slot_idx] = (
+            best[8].astype(np.float32, copy=True),
+            best[9].astype(np.float32, copy=True),
+        )
+        self.last_edge_path_direct_feature_bundle[direct_slot] = self.edge_path_direct_feature_bundle(
+            int(slot),
+            best[8],
+            best[9],
+            best[10],
         )
         self.edge_path_cleanup_wins[slot_idx] += 1
         if len(ranked) > 1:
             runner = ranked[1]
+            self.last_edge_path_runner_trace_index[slot_idx] = int(runner[5])
             self.last_edge_path_runner_up[slot_idx] = (
                 int(runner[4]),
-                runner[7].astype(np.float32, copy=True),
+                runner[10].astype(np.float32, copy=True),
                 float(runner[0]),
                 float(runner[1]),
                 float(runner[3]),
+                float(runner[2]),
+                int(runner[6]),
+                int(runner[7]),
+            )
+            self.last_edge_path_runner_states[slot_idx] = (
+                runner[8].astype(np.float32, copy=True),
+                runner[9].astype(np.float32, copy=True),
             )
         top_k = min(max(self.edge_path_soft_top_k, 1), len(ranked))
         top = ranked[:top_k]
@@ -1903,22 +3457,114 @@ class OnlineLocalRoleTransitionMemory:
         state = np.zeros(self.state_dim, dtype=np.float32)
         path_state = np.zeros(self.state_dim, dtype=np.float32)
         weight_sum = 0.0
-        for score, support, _, _, _, source_state, destination_state, path_feature in top:
+        weighted_candidates: list[tuple[int, np.ndarray, float, float, float, float]] = []
+        for score, support, _, learned, mid, _, _, _, source_state, destination_state, path_feature in top:
             soft = math.exp((float(score) - max_score) / self.edge_path_soft_temperature)
             weight = max(float(support), 1e-6) * soft
             state += weight * (source_state if int(slot) <= 0 else destination_state)
             path_state += weight * path_feature
             weight_sum += weight
+            weighted_candidates.append(
+                (
+                    int(mid),
+                    path_feature.astype(np.float32, copy=True),
+                    float(score),
+                    float(support),
+                    float(learned),
+                    float(weight),
+                )
+            )
         if weight_sum <= 0.0:
-            self.last_edge_path_direct_feature[self.edge_path_direct_slot_index(slot)] = top[0][7].astype(
+            self.last_edge_path_direct_feature[self.edge_path_direct_slot_index(slot)] = top[0][10].astype(
                 np.float32,
                 copy=True,
             )
-            return top[0][5] if int(slot) <= 0 else top[0][6]
+            self.last_edge_path_top_candidates[slot_idx] = [
+                (
+                    int(top[0][4]),
+                    top[0][10].astype(np.float32, copy=True),
+                    float(top[0][0]),
+                    float(top[0][1]),
+                    float(top[0][3]),
+                    1.0,
+                )
+            ]
+            return top[0][8] if int(slot) <= 0 else top[0][9]
+        self.last_edge_path_top_candidates[slot_idx] = [
+            (mid, feature, score, support, learned, weight / weight_sum)
+            for mid, feature, score, support, learned, weight in weighted_candidates
+        ]
         self.last_edge_path_direct_feature[self.edge_path_direct_slot_index(slot)] = phase.normalize_vector(
             (path_state / weight_sum).astype(np.float32)
         )
         return phase.normalize_vector((state / weight_sum).astype(np.float32))
+
+    def edge_path_last_candidate_answer_feature(
+        self,
+        slot: int,
+        candidate: str = "runner",
+    ) -> np.ndarray | None:
+        slot_idx = self.edge_path_slot_index(slot)
+        states = (
+            self.last_edge_path_runner_states.get(slot_idx)
+            if str(candidate) == "runner"
+            else self.last_edge_path_selection_states.get(slot_idx)
+        )
+        if states is None:
+            return None
+        side_state = states[0] if int(slot) <= 0 else states[1]
+        return phase.normalize_vector(
+            np.concatenate([self.last_base_feature, side_state]).astype(np.float32)
+        )
+
+    def edge_path_last_candidate_metrics(self, slot: int) -> dict[str, Any]:
+        slot_idx = self.edge_path_slot_index(slot)
+        row: dict[str, Any] = {
+            "edge_path_candidate_count": int(self.last_edge_path_candidate_count.get(slot_idx, 0)),
+            "edge_path_cleanup_credit_mode": self.edge_path_cleanup_credit_mode,
+            "edge_path_margin_gate": float(self.edge_path_margin_gate),
+            "edge_path_margin_min_scale": float(self.edge_path_margin_min_scale),
+            "edge_path_margin_alt_scale": float(self.edge_path_margin_alt_scale),
+            "edge_path_margin_learned_dominance": float(self.edge_path_margin_learned_dominance),
+            "edge_path_margin_escape_scale": float(self.edge_path_margin_escape_scale),
+            "edge_path_transient_inhibit_scale": float(self.edge_path_transient_inhibit_scale),
+            "edge_path_transient_inhibit_key": self.edge_path_transient_inhibit_key,
+            "edge_path_soft_learned_scale": float(self.edge_path_soft_learned_scale),
+        }
+        selection = self.last_edge_path_selection.get(slot_idx)
+        runner = self.last_edge_path_runner_up.get(slot_idx)
+        for prefix, item in [
+            ("edge_path_selected", selection),
+            ("edge_path_runner", runner),
+        ]:
+            if item is None:
+                row[f"{prefix}_mid"] = -1
+                row[f"{prefix}_score"] = float("nan")
+                row[f"{prefix}_support"] = float("nan")
+                row[f"{prefix}_learned"] = float("nan")
+                row[f"{prefix}_consistency"] = float("nan")
+                row[f"{prefix}_source_anchor"] = -1
+                row[f"{prefix}_destination_anchor"] = -1
+                continue
+            mid, _, score, support, learned, consistency, source_anchor, destination_anchor = item
+            row[f"{prefix}_mid"] = int(mid)
+            row[f"{prefix}_score"] = float(score)
+            row[f"{prefix}_support"] = float(support)
+            row[f"{prefix}_learned"] = float(learned)
+            row[f"{prefix}_consistency"] = float(consistency)
+            row[f"{prefix}_source_anchor"] = int(source_anchor)
+            row[f"{prefix}_destination_anchor"] = int(destination_anchor)
+        if selection is not None and runner is not None:
+            row["edge_path_selected_vs_runner_margin"] = float(selection[2]) - float(runner[2])
+            row["edge_path_selected_support_vs_runner"] = float(selection[3]) - float(runner[3])
+            row["edge_path_selected_learned_vs_runner"] = float(selection[4]) - float(runner[4])
+            row["edge_path_selected_consistency_vs_runner"] = float(selection[5]) - float(runner[5])
+        else:
+            row["edge_path_selected_vs_runner_margin"] = float("nan")
+            row["edge_path_selected_support_vs_runner"] = float("nan")
+            row["edge_path_selected_learned_vs_runner"] = float("nan")
+            row["edge_path_selected_consistency_vs_runner"] = float("nan")
+        return row
 
     def update_edge_path_cleanup_slot(
         self,
@@ -1951,8 +3597,10 @@ class OnlineLocalRoleTransitionMemory:
         slot_idx: int,
         mid: int,
         path_feature: np.ndarray,
+        lr_scale: float = 1.0,
     ) -> None:
-        if self.edge_path_cleanup_wrong_lr <= 0.0:
+        lr = self.edge_path_cleanup_wrong_lr * float(max(lr_scale, 0.0))
+        if lr <= 0.0:
             return
         slot_idx = self.edge_path_slot_index(slot_idx)
         mid = int(mid)
@@ -1965,7 +3613,7 @@ class OnlineLocalRoleTransitionMemory:
         bank_slot = int(np.argmax(dots))
         self.edge_path_cleanup_prototypes[slot_idx, mid, bank_slot] = phase.normalize_vector(
             self.edge_path_cleanup_prototypes[slot_idx, mid, bank_slot]
-            - self.edge_path_cleanup_wrong_lr * path_feature
+            - lr * path_feature
         )
         self.edge_path_cleanup_wrong_updates[slot_idx] += 1
 
@@ -1985,6 +3633,52 @@ class OnlineLocalRoleTransitionMemory:
         self.edge_path_direct_score_checks[slot_idx] += 1
         return scores
 
+    def edge_path_direct_scores_from_bundle(
+        self,
+        slot_idx: int,
+        feature_bundle: list[tuple[float, np.ndarray]],
+    ) -> np.ndarray:
+        scores = np.zeros(self.vocab_size, dtype=np.float32)
+        weight_sum = 0.0
+        for feature_weight, feature in feature_bundle:
+            feature_weight = float(feature_weight)
+            if feature_weight <= 0.0:
+                continue
+            scores += feature_weight * self.edge_path_direct_scores_from_feature(slot_idx, feature)
+            weight_sum += feature_weight
+        if weight_sum <= 0.0:
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        return (scores / weight_sum).astype(np.float32)
+
+    def edge_path_candidate_direct_scores(self, tokens: list[int], slot: int) -> np.ndarray:
+        scores = np.zeros(self.vocab_size, dtype=np.float32)
+        if self.edge_path_direct_score_scale <= 0.0:
+            return scores
+        ranked = self.edge_path_soft_ranked_candidates(tokens, int(slot))
+        if not ranked:
+            return scores
+        top_k = min(max(self.edge_path_soft_top_k, 1), len(ranked))
+        top = ranked[:top_k]
+        max_score = max(float(item[0]) for item in top)
+        slot_idx = self.edge_path_direct_slot_index(slot)
+        weight_sum = 0.0
+        for score, support, _, _, _, _, _, _, source_state, destination_state, path_feature in top:
+            soft = math.exp((float(score) - max_score) / self.edge_path_soft_temperature)
+            weight = max(float(support), 1e-6) * soft
+            if weight <= 0.0:
+                continue
+            feature_bundle = self.edge_path_direct_feature_bundle(
+                int(slot),
+                source_state,
+                destination_state,
+                path_feature,
+            )
+            scores += weight * self.edge_path_direct_scores_from_bundle(slot_idx, feature_bundle)
+            weight_sum += weight
+        if weight_sum <= 0.0:
+            return np.zeros(self.vocab_size, dtype=np.float32)
+        return (scores / weight_sum).astype(np.float32)
+
     def answer_slot_score_delta(
         self,
         context: Sequence[int] | np.ndarray,
@@ -1993,18 +3687,27 @@ class OnlineLocalRoleTransitionMemory:
     ) -> np.ndarray:
         if str(mode) != "edge_path_soft_direct":
             return np.zeros(self.vocab_size, dtype=np.float32)
+        tokens = [int(token) for token in list(context)[-self.max_order :]]
+        if self.edge_path_direct_mode in {"candidate_scores", "structured_scores"}:
+            return self.edge_path_candidate_direct_scores(tokens, int(slot))
         slot_idx = self.edge_path_direct_slot_index(slot)
         feature = self.last_edge_path_direct_feature.get(slot_idx)
         if feature is None:
-            tokens = [int(token) for token in list(context)[-self.max_order :]]
             self.edge_path_soft_state(tokens, int(slot))
             feature = self.last_edge_path_direct_feature.get(slot_idx)
         if feature is None:
             return np.zeros(self.vocab_size, dtype=np.float32)
         return self.edge_path_direct_scores_from_feature(slot_idx, feature)
 
-    def update_edge_path_direct_target(self, slot_idx: int, target: int, feature: np.ndarray) -> None:
-        if self.edge_path_direct_lr <= 0.0:
+    def update_edge_path_direct_target(
+        self,
+        slot_idx: int,
+        target: int,
+        feature: np.ndarray,
+        lr_scale: float = 1.0,
+    ) -> None:
+        lr = self.edge_path_direct_lr * float(max(lr_scale, 0.0))
+        if lr <= 0.0:
             return
         slot_idx = self.edge_path_direct_slot_index(slot_idx)
         target = int(target)
@@ -2018,14 +3721,21 @@ class OnlineLocalRoleTransitionMemory:
         dots = self.edge_path_direct_prototypes[slot_idx, target] @ feature
         bank_slot = int(np.argmax(dots))
         self.edge_path_direct_prototypes[slot_idx, target, bank_slot] = phase.normalize_vector(
-            (1.0 - self.edge_path_direct_lr)
+            (1.0 - lr)
             * self.edge_path_direct_prototypes[slot_idx, target, bank_slot]
-            + self.edge_path_direct_lr * feature
+            + lr * feature
         )
         self.edge_path_direct_counts[slot_idx, target, bank_slot] += 1.0
 
-    def update_edge_path_direct_wrong(self, slot_idx: int, wrong: int, feature: np.ndarray) -> None:
-        if self.edge_path_direct_wrong_lr <= 0.0:
+    def update_edge_path_direct_wrong(
+        self,
+        slot_idx: int,
+        wrong: int,
+        feature: np.ndarray,
+        lr_scale: float = 1.0,
+    ) -> None:
+        lr = self.edge_path_direct_wrong_lr * float(max(lr_scale, 0.0))
+        if lr <= 0.0:
             return
         slot_idx = self.edge_path_direct_slot_index(slot_idx)
         wrong = int(wrong)
@@ -2038,9 +3748,28 @@ class OnlineLocalRoleTransitionMemory:
         bank_slot = int(np.argmax(dots))
         self.edge_path_direct_prototypes[slot_idx, wrong, bank_slot] = phase.normalize_vector(
             self.edge_path_direct_prototypes[slot_idx, wrong, bank_slot]
-            - self.edge_path_direct_wrong_lr * feature
+            - lr * feature
         )
         self.edge_path_direct_wrong_updates[slot_idx] += 1
+
+    def update_edge_path_direct_bundle(
+        self,
+        slot_idx: int,
+        target: int,
+        wrong: int,
+        should_apply_credit: bool,
+        feature_bundle: list[tuple[float, np.ndarray]],
+    ) -> bool:
+        wrote_any = False
+        for feature_weight, feature in feature_bundle:
+            feature_weight = float(feature_weight)
+            if feature_weight <= 0.0:
+                continue
+            self.update_edge_path_direct_target(slot_idx, int(target), feature, feature_weight)
+            wrote_any = True
+            if bool(should_apply_credit):
+                self.update_edge_path_direct_wrong(slot_idx, int(wrong), feature, feature_weight)
+        return wrote_any
 
     def update_answer_slot_feature(
         self,
@@ -2050,6 +3779,7 @@ class OnlineLocalRoleTransitionMemory:
         slot: int,
         should_apply_credit: bool,
         mode: str,
+        runner_counterfactual_margin_gain: float | None = None,
     ) -> None:
         mode = str(mode)
         if mode not in {"edge_path_wta", "edge_path_soft", "edge_path_soft_direct"}:
@@ -2064,24 +3794,542 @@ class OnlineLocalRoleTransitionMemory:
                 self.edge_path_wta_state(tokens, slot_idx)
             selection = self.last_edge_path_selection.get(slot_idx)
         direct_slot = self.edge_path_direct_slot_index(slot)
-        direct_feature = self.last_edge_path_direct_feature.get(direct_slot)
-        if mode == "edge_path_soft_direct" and direct_feature is not None:
-            self.update_edge_path_direct_target(direct_slot, int(target), direct_feature)
-            self.edge_path_direct_updates[direct_slot] += 1
-            if bool(should_apply_credit):
-                self.update_edge_path_direct_wrong(direct_slot, int(wrong), direct_feature)
+        direct_bundle: list[tuple[float, np.ndarray]] = []
+        if self.edge_path_direct_mode == "candidate_scores":
+            if selection is not None:
+                direct_bundle = [(1.0, selection[1])]
+        elif self.edge_path_direct_mode == "structured_scores":
+            direct_bundle = self.last_edge_path_direct_feature_bundle.get(direct_slot, [])
+        else:
+            direct_feature = self.last_edge_path_direct_feature.get(direct_slot)
+            if direct_feature is not None:
+                direct_bundle = [(1.0, direct_feature)]
+        if mode == "edge_path_soft_direct" and direct_bundle:
+            wrote_any = self.update_edge_path_direct_bundle(
+                direct_slot,
+                int(target),
+                int(wrong),
+                bool(should_apply_credit),
+                direct_bundle,
+            )
+            if wrote_any:
+                self.edge_path_direct_updates[direct_slot] += 1
         if selection is None:
             return
-        mid, path_feature, _, _, _ = selection
-        lr = self.edge_path_cleanup_lr
-        if bool(should_apply_credit):
-            lr *= 0.25
-        self.update_edge_path_cleanup_slot(slot_idx, mid, path_feature, lr)
-        self.edge_path_cleanup_updates[slot_idx] += 1
+        mid, path_feature, _, _, _, _, _, _ = selection
         runner = self.last_edge_path_runner_up.get(slot_idx)
-        if runner is not None and not bool(should_apply_credit):
-            runner_mid, runner_feature, _, _, _ = runner
-            self.suppress_edge_path_cleanup_slot(slot_idx, runner_mid, runner_feature)
+        runner_pair_feature = None
+        if runner is not None:
+            runner_mid_for_pair, runner_feature_for_pair, _, _, _, _, _, _ = runner
+            runner_pair_feature = self.edge_path_runner_arbiter_feature(
+                int(mid),
+                path_feature,
+                int(runner_mid_for_pair),
+                runner_feature_for_pair,
+                selected_score=float(selection[2]),
+                selected_support=float(selection[3]),
+                selected_learned=float(selection[4]),
+                selected_consistency=float(selection[5]),
+                runner_score=float(runner[2]),
+                runner_support=float(runner[3]),
+                runner_learned=float(runner[4]),
+                runner_consistency=float(runner[5]),
+            )
+        selected_closure_feature = None
+        selected_states = self.last_edge_path_selection_states.get(slot_idx)
+        if selected_states is not None:
+            selected_closure_feature = self.edge_path_closure_proto_feature(
+                selected_states[0],
+                selected_states[1],
+                path_feature,
+            )
+        runner_closure_feature = None
+        runner_states = self.last_edge_path_runner_states.get(slot_idx)
+        if runner is not None and runner_states is not None:
+            runner_closure_feature = self.edge_path_closure_proto_feature(
+                runner_states[0],
+                runner_states[1],
+                runner[1],
+            )
+        selected_affinity_feature = None
+        runner_affinity_feature = None
+        selected_closure_score = 0.0
+        runner_closure_score = 0.0
+        runner_support = 0.0
+        runner_consistency = 0.0
+        runner_learned = 0.0
+        if runner is not None:
+            runner_support = float(runner[3])
+            runner_learned = float(runner[4])
+            runner_consistency = float(runner[5])
+        if selected_states is not None:
+            selected_closure_score = self.edge_path_raw_closure_score(
+                selected_states[0],
+                selected_states[1],
+                path_feature,
+            )
+        if runner is not None and runner_states is not None:
+            runner_closure_score = self.edge_path_raw_closure_score(
+                runner_states[0],
+                runner_states[1],
+                runner[1],
+            )
+        if self.edge_path_affinity_score_scale > 0.0 and selected_states is not None:
+            if self.edge_path_affinity_gate(
+                float(selection[3]),
+                float(selected_closure_score),
+                float(selection[5]),
+                float(selection[4]),
+                runner_support,
+                runner_closure_score,
+                runner_consistency,
+                runner_learned,
+            ):
+                selected_affinity_feature = self.edge_path_affinity_feature(
+                    float(selection[3]),
+                    float(selected_closure_score),
+                    float(selection[5]),
+                    float(selection[4]),
+                    runner_support,
+                    runner_closure_score,
+                    runner_consistency,
+                    runner_learned,
+                )
+            if runner is not None:
+                if self.edge_path_affinity_gate(
+                    runner_support,
+                    runner_closure_score,
+                    runner_consistency,
+                    runner_learned,
+                    float(selection[3]),
+                    float(selected_closure_score),
+                    float(selection[5]),
+                    float(selection[4]),
+                ):
+                    runner_affinity_feature = self.edge_path_affinity_feature(
+                        runner_support,
+                        runner_closure_score,
+                        runner_consistency,
+                        runner_learned,
+                        float(selection[3]),
+                        float(selected_closure_score),
+                        float(selection[5]),
+                        float(selection[4]),
+                    )
+        if self.edge_path_homeostasis_trace is not None:
+            selected_homeostasis_weight = 1.0
+            top_candidates_for_homeostasis = self.last_edge_path_top_candidates.get(slot_idx, [])
+            if top_candidates_for_homeostasis:
+                selected_homeostasis_weight = float(max(top_candidates_for_homeostasis[0][5], 0.0))
+            selected_trace_idx = self.last_edge_path_trace_index.get(slot_idx)
+            if selected_trace_idx is None:
+                selected_trace_idx = self.edge_path_transient_trace_index(int(mid), path_feature)
+            selected_homeostasis_update = True
+            if self.edge_path_homeostasis_hard_gate_enabled():
+                selected_homeostasis_update = self.edge_path_homeostasis_gate(
+                    float(selection[3]),
+                    float(selected_closure_score),
+                    float(selection[5]),
+                    float(selection[4]),
+                    runner_support,
+                    runner_closure_score,
+                    runner_consistency,
+                    runner_learned,
+                )
+            if selected_homeostasis_update:
+                selected_homeostasis_weight *= self.edge_path_homeostasis_soft_multiplier(
+                    float(selection[3]),
+                    float(selected_closure_score),
+                    float(selection[5]),
+                    float(selection[4]),
+                    runner_support,
+                    runner_closure_score,
+                    runner_consistency,
+                    runner_learned,
+                )
+                self.update_edge_path_homeostasis(
+                    slot_idx,
+                    int(selected_trace_idx),
+                    selected_homeostasis_weight,
+                )
+        if self.edge_path_cleanup_credit_mode == "reward_punish":
+            if bool(should_apply_credit):
+                self.suppress_edge_path_cleanup_slot(slot_idx, mid, path_feature)
+            else:
+                self.update_edge_path_cleanup_slot(slot_idx, mid, path_feature, self.edge_path_cleanup_lr)
+                self.edge_path_cleanup_updates[slot_idx] += 1
+                if runner is not None:
+                    runner_mid, runner_feature, _, _, _, _, _, _ = runner
+                    self.suppress_edge_path_cleanup_slot(slot_idx, runner_mid, runner_feature)
+        elif self.edge_path_cleanup_credit_mode == "soft_eligibility":
+            top_candidates = self.last_edge_path_top_candidates.get(slot_idx, [])
+            if bool(should_apply_credit):
+                selected_weight = 1.0
+                if top_candidates:
+                    selected_weight = float(max(top_candidates[0][5], 0.0))
+                self.suppress_edge_path_cleanup_slot(
+                    slot_idx,
+                    mid,
+                    path_feature,
+                    lr_scale=selected_weight,
+                )
+            elif top_candidates:
+                for cand_mid, cand_feature, _, _, _, cand_weight in top_candidates:
+                    cand_weight = float(max(cand_weight, 0.0))
+                    if cand_weight <= 0.0:
+                        continue
+                    self.update_edge_path_cleanup_slot(
+                        slot_idx,
+                        cand_mid,
+                        cand_feature,
+                        self.edge_path_cleanup_lr * cand_weight,
+                    )
+                    self.edge_path_cleanup_updates[slot_idx] += 1
+                if runner is not None:
+                    runner_mid, runner_feature, _, _, _, _, _, _ = runner
+                    self.suppress_edge_path_cleanup_slot(
+                        slot_idx,
+                        runner_mid,
+                        runner_feature,
+                        lr_scale=0.5,
+                    )
+            else:
+                self.update_edge_path_cleanup_slot(slot_idx, mid, path_feature, self.edge_path_cleanup_lr)
+                self.edge_path_cleanup_updates[slot_idx] += 1
+        elif self.edge_path_cleanup_credit_mode == "margin_gated_soft_eligibility":
+            top_candidates = self.last_edge_path_top_candidates.get(slot_idx, [])
+            margin = 0.0
+            ambiguity = 0.0
+            if runner is not None:
+                _, _, runner_score, runner_support, _, _, _, _ = runner
+                margin = max(float(selection[2]) - float(runner_score), 0.0)
+                if self.edge_path_margin_gate <= 0.0:
+                    ambiguity = 1.0
+                else:
+                    ambiguity = float(
+                        np.clip((self.edge_path_margin_gate - margin) / self.edge_path_margin_gate, 0.0, 1.0)
+                    )
+            update_scale = self.edge_path_margin_min_scale + (
+                (1.0 - self.edge_path_margin_min_scale) * ambiguity
+            )
+            if bool(should_apply_credit):
+                selected_weight = 1.0
+                selected_support = float(selection[3])
+                support_protect = 1.0
+                if runner is not None and selected_support > float(runner_support) + self.edge_path_margin_gate:
+                    support_protect = 0.25
+                if top_candidates:
+                    selected_weight = float(max(top_candidates[0][5], 0.0))
+                    for cand_mid, cand_feature, _, cand_support, _, cand_weight in top_candidates[1:]:
+                        cand_weight = float(max(cand_weight, 0.0))
+                        if cand_weight <= 0.0:
+                            continue
+                        if float(cand_support) + self.edge_path_margin_gate < selected_support:
+                            continue
+                        self.update_edge_path_cleanup_slot(
+                            slot_idx,
+                            cand_mid,
+                            cand_feature,
+                            self.edge_path_cleanup_lr
+                            * cand_weight
+                            * update_scale
+                            * self.edge_path_margin_alt_scale,
+                        )
+                        self.edge_path_cleanup_updates[slot_idx] += 1
+                self.suppress_edge_path_cleanup_slot(
+                    slot_idx,
+                    mid,
+                    path_feature,
+                    lr_scale=selected_weight * update_scale * support_protect,
+                )
+            elif top_candidates:
+                for cand_mid, cand_feature, _, _, _, cand_weight in top_candidates:
+                    cand_weight = float(max(cand_weight, 0.0))
+                    if cand_weight <= 0.0:
+                        continue
+                    self.update_edge_path_cleanup_slot(
+                        slot_idx,
+                        cand_mid,
+                        cand_feature,
+                        self.edge_path_cleanup_lr * cand_weight * update_scale,
+                    )
+                    self.edge_path_cleanup_updates[slot_idx] += 1
+                if runner is not None and ambiguity > 0.0:
+                    runner_mid, runner_feature, _, _, _, _, _, _ = runner
+                    self.suppress_edge_path_cleanup_slot(
+                        slot_idx,
+                        runner_mid,
+                        runner_feature,
+                        lr_scale=0.5 * ambiguity,
+                    )
+            else:
+                self.update_edge_path_cleanup_slot(
+                    slot_idx,
+                    mid,
+                    path_feature,
+                    self.edge_path_cleanup_lr * update_scale,
+                )
+                self.edge_path_cleanup_updates[slot_idx] += 1
+        elif self.edge_path_cleanup_credit_mode == "learned_margin_escape":
+            top_candidates = self.last_edge_path_top_candidates.get(slot_idx, [])
+            margin = 0.0
+            support_margin = 0.0
+            learned_margin = 0.0
+            ambiguity = 0.0
+            if runner is not None:
+                _, _, runner_score, runner_support, runner_learned, _, _, _ = runner
+                margin = max(float(selection[2]) - float(runner_score), 0.0)
+                support_margin = float(selection[3]) - float(runner_support)
+                learned_margin = float(selection[4]) - float(runner_learned)
+                if self.edge_path_margin_gate <= 0.0:
+                    ambiguity = 1.0
+                else:
+                    ambiguity = float(
+                        np.clip((self.edge_path_margin_gate - margin) / self.edge_path_margin_gate, 0.0, 1.0)
+                    )
+            update_scale = self.edge_path_margin_min_scale + (
+                (1.0 - self.edge_path_margin_min_scale) * ambiguity
+            )
+            selected_weight = 1.0
+            if top_candidates:
+                selected_weight = float(max(top_candidates[0][5], 0.0))
+            if bool(should_apply_credit):
+                learned_dominates = (
+                    runner is not None
+                    and learned_margin > 0.0
+                    and learned_margin
+                    >= self.edge_path_margin_learned_dominance * max(float(support_margin), 0.0)
+                )
+                high_margin = runner is not None and margin >= self.edge_path_margin_gate
+                if high_margin and learned_dominates:
+                    self.suppress_edge_path_cleanup_slot(
+                        slot_idx,
+                        mid,
+                        path_feature,
+                        lr_scale=selected_weight * self.edge_path_margin_escape_scale,
+                    )
+                else:
+                    self.suppress_edge_path_cleanup_slot(
+                        slot_idx,
+                        mid,
+                        path_feature,
+                        lr_scale=selected_weight * update_scale,
+                    )
+            elif top_candidates:
+                for cand_mid, cand_feature, _, _, _, cand_weight in top_candidates:
+                    cand_weight = float(max(cand_weight, 0.0))
+                    if cand_weight <= 0.0:
+                        continue
+                    self.update_edge_path_cleanup_slot(
+                        slot_idx,
+                        cand_mid,
+                        cand_feature,
+                        self.edge_path_cleanup_lr * cand_weight * update_scale,
+                    )
+                    self.edge_path_cleanup_updates[slot_idx] += 1
+                if runner is not None and ambiguity > 0.0:
+                    runner_mid, runner_feature, _, _, _, _, _, _ = runner
+                    self.suppress_edge_path_cleanup_slot(
+                        slot_idx,
+                        runner_mid,
+                        runner_feature,
+                        lr_scale=0.5 * ambiguity,
+                    )
+            else:
+                self.update_edge_path_cleanup_slot(
+                    slot_idx,
+                    mid,
+                    path_feature,
+                    self.edge_path_cleanup_lr * update_scale,
+                )
+                self.edge_path_cleanup_updates[slot_idx] += 1
+        elif self.edge_path_cleanup_credit_mode == "transient_inhibit_escape":
+            top_candidates = self.last_edge_path_top_candidates.get(slot_idx, [])
+            if self.edge_path_transient_inhibit_decay < 1.0:
+                self.edge_path_transient_inhibit_trace[slot_idx] *= self.edge_path_transient_inhibit_decay
+                self.edge_path_transient_boost_trace[slot_idx] *= self.edge_path_transient_inhibit_decay
+            margin = 0.0
+            support_margin = 0.0
+            learned_margin = 0.0
+            ambiguity = 0.0
+            if runner is not None:
+                _, _, runner_score, runner_support, runner_learned, _, _, _ = runner
+                margin = max(float(selection[2]) - float(runner_score), 0.0)
+                support_margin = float(selection[3]) - float(runner_support)
+                learned_margin = float(selection[4]) - float(runner_learned)
+                if self.edge_path_margin_gate <= 0.0:
+                    ambiguity = 1.0
+                else:
+                    ambiguity = float(
+                        np.clip((self.edge_path_margin_gate - margin) / self.edge_path_margin_gate, 0.0, 1.0)
+                    )
+            update_scale = self.edge_path_margin_min_scale + (
+                (1.0 - self.edge_path_margin_min_scale) * ambiguity
+            )
+            selected_weight = 1.0
+            if top_candidates:
+                selected_weight = float(max(top_candidates[0][5], 0.0))
+            if bool(should_apply_credit):
+                learned_dominates = (
+                    runner is not None
+                    and learned_margin > 0.0
+                    and learned_margin
+                    >= self.edge_path_margin_learned_dominance * max(float(support_margin), 0.0)
+                )
+                high_margin = runner is not None and margin >= self.edge_path_margin_gate
+                if high_margin and learned_dominates and self.edge_path_transient_inhibit_lr > 0.0:
+                    runner_close = (
+                        runner is not None
+                        and support_margin <= self.edge_path_transient_boost_support_margin
+                    )
+                    if runner_close and selected_closure_feature is not None:
+                        self.update_edge_path_closure_proto_negative(
+                            slot_idx,
+                            selected_closure_feature,
+                        )
+                    if runner_close and runner_closure_feature is not None:
+                        self.update_edge_path_closure_proto_positive(
+                            slot_idx,
+                            runner_closure_feature,
+                        )
+                    if runner_close and selected_affinity_feature is not None:
+                        self.update_edge_path_affinity_negative(
+                            slot_idx,
+                            selected_affinity_feature,
+                        )
+                    if runner_close and runner_affinity_feature is not None:
+                        self.update_edge_path_affinity_positive(
+                            slot_idx,
+                            runner_affinity_feature,
+                        )
+                    if runner_close and runner_pair_feature is not None:
+                        arbiter_credit = self.edge_path_runner_arbiter_credit_mode == "answer_error"
+                        if self.edge_path_runner_arbiter_credit_mode == "counterfactual_positive":
+                            arbiter_credit = (
+                                runner_counterfactual_margin_gain is not None
+                                and math.isfinite(float(runner_counterfactual_margin_gain))
+                                and float(runner_counterfactual_margin_gain) >= 0.0
+                            )
+                        if arbiter_credit:
+                            self.update_edge_path_runner_arbiter_target(
+                                slot_idx,
+                                runner_pair_feature,
+                            )
+                    trace_delta = self.edge_path_transient_inhibit_lr * selected_weight
+                    trace_idx = self.last_edge_path_trace_index.get(slot_idx)
+                    if trace_idx is None:
+                        trace_idx = self.edge_path_transient_trace_index(int(mid), path_feature)
+                    current = float(self.edge_path_transient_inhibit_trace[slot_idx, trace_idx])
+                    self.edge_path_transient_inhibit_trace[slot_idx, trace_idx] = min(
+                        current + trace_delta,
+                        1.0,
+                    )
+                    self.edge_path_transient_inhibit_updates[slot_idx] += 1
+                    runner_consistent = True
+                    if runner is not None and self.edge_path_transient_boost_consistency_margin >= 0.0:
+                        runner_consistent = (
+                            float(runner[5]) + self.edge_path_transient_boost_consistency_margin
+                            >= float(selection[5])
+                        )
+                    runner_fresh = True
+                    if runner is not None and self.edge_path_transient_boost_runner_learned_max >= 0.0:
+                        runner_fresh = (
+                            float(runner[4]) <= self.edge_path_transient_boost_runner_learned_max
+                        )
+                    if runner_close and not runner_consistent:
+                        self.edge_path_transient_boost_consistency_skips[slot_idx] += 1
+                    if runner_close and runner_consistent and not runner_fresh:
+                        self.edge_path_transient_boost_learned_skips[slot_idx] += 1
+                    runner_counterfactual_ok = True
+                    if self.edge_path_transient_boost_counterfactual_min_gain > -1.0:
+                        runner_counterfactual_ok = (
+                            runner_counterfactual_margin_gain is not None
+                            and math.isfinite(float(runner_counterfactual_margin_gain))
+                            and float(runner_counterfactual_margin_gain)
+                            >= self.edge_path_transient_boost_counterfactual_min_gain
+                        )
+                    if (
+                        runner_close
+                        and runner_consistent
+                        and runner_fresh
+                        and not runner_counterfactual_ok
+                    ):
+                        self.edge_path_transient_boost_counterfactual_skips[slot_idx] += 1
+                    if (
+                        runner_close
+                        and runner_consistent
+                        and runner_fresh
+                        and runner_counterfactual_ok
+                        and self.edge_path_transient_boost_lr > 0.0
+                    ):
+                        runner_trace_idx = self.last_edge_path_runner_trace_index.get(slot_idx)
+                        if runner_trace_idx is not None:
+                            runner_weight = 1.0
+                            if len(top_candidates) > 1:
+                                runner_weight = float(max(top_candidates[1][5], 0.0))
+                            boost_delta = self.edge_path_transient_boost_lr * runner_weight
+                            boost_current = float(
+                                self.edge_path_transient_boost_trace[slot_idx, runner_trace_idx]
+                            )
+                            self.edge_path_transient_boost_trace[slot_idx, runner_trace_idx] = min(
+                                boost_current + boost_delta,
+                                1.0,
+                            )
+                            self.edge_path_transient_boost_updates[slot_idx] += 1
+                else:
+                    self.suppress_edge_path_cleanup_slot(
+                        slot_idx,
+                        mid,
+                        path_feature,
+                        lr_scale=selected_weight * update_scale,
+                    )
+            elif top_candidates:
+                if selected_closure_feature is not None:
+                    self.update_edge_path_closure_proto_positive(slot_idx, selected_closure_feature)
+                if runner_closure_feature is not None:
+                    self.update_edge_path_closure_proto_negative(slot_idx, runner_closure_feature)
+                if selected_affinity_feature is not None:
+                    self.update_edge_path_affinity_positive(slot_idx, selected_affinity_feature)
+                if runner_affinity_feature is not None:
+                    self.update_edge_path_affinity_negative(slot_idx, runner_affinity_feature)
+                if runner_pair_feature is not None:
+                    self.suppress_edge_path_runner_arbiter(slot_idx, runner_pair_feature)
+                for cand_mid, cand_feature, _, _, _, cand_weight in top_candidates:
+                    cand_weight = float(max(cand_weight, 0.0))
+                    if cand_weight <= 0.0:
+                        continue
+                    self.update_edge_path_cleanup_slot(
+                        slot_idx,
+                        cand_mid,
+                        cand_feature,
+                        self.edge_path_cleanup_lr * cand_weight * update_scale,
+                    )
+                    self.edge_path_cleanup_updates[slot_idx] += 1
+                if runner is not None and ambiguity > 0.0:
+                    runner_mid, runner_feature, _, _, _, _, _, _ = runner
+                    self.suppress_edge_path_cleanup_slot(
+                        slot_idx,
+                        runner_mid,
+                        runner_feature,
+                        lr_scale=0.5 * ambiguity,
+                    )
+            else:
+                self.update_edge_path_cleanup_slot(
+                    slot_idx,
+                    mid,
+                    path_feature,
+                    self.edge_path_cleanup_lr * update_scale,
+                )
+                self.edge_path_cleanup_updates[slot_idx] += 1
+        else:
+            lr = self.edge_path_cleanup_lr
+            if bool(should_apply_credit):
+                lr *= 0.25
+            self.update_edge_path_cleanup_slot(slot_idx, mid, path_feature, lr)
+            self.edge_path_cleanup_updates[slot_idx] += 1
+            if runner is not None and not bool(should_apply_credit):
+                runner_mid, runner_feature, _, _, _, _, _, _ = runner
+                self.suppress_edge_path_cleanup_slot(slot_idx, runner_mid, runner_feature)
 
     def answer_slot_feature(
         self,
@@ -2246,19 +4494,70 @@ class OnlineLocalRoleTransitionMemory:
                 pieces.append(self.token_codes[pred].astype(np.float32, copy=False))
             else:
                 pieces.append(np.zeros(self.state_dim, dtype=np.float32))
+        if self.role_branch_arbiter_rich_conflict_features:
+            base_idx = self.branch_arbiter_index("base_only")
+            default_idx = self.branch_arbiter_index(self.role_branch_arbiter_default)
+            base_pred = preds[base_idx]
+            default_pred = preds[default_idx]
+            if 0 <= base_pred < self.vocab_size and 0 <= default_pred < self.vocab_size:
+                pair_code = phase.normalize_vector(self.token_codes[base_pred] * self.token_codes[default_pred])
+                base_role = float(self.last_role_scores[base_pred])
+                default_role = float(self.last_role_scores[default_pred])
+                base_joint = (
+                    float(self.last_joint_rescue_delta[base_pred])
+                    if self.last_joint_rescue_delta.size
+                    else 0.0
+                )
+                default_joint = (
+                    float(self.last_joint_rescue_delta[default_pred])
+                    if self.last_joint_rescue_delta.size
+                    else 0.0
+                )
+                base_scores = components["base_only"]
+                default_scores = components[self.role_branch_arbiter_default]
+                base_support_gap = float(base_scores[base_pred] - base_scores[default_pred])
+                default_support_gap = float(default_scores[default_pred] - default_scores[base_pred])
+                rich_scalars = np.array(
+                    [
+                        math.tanh(base_role),
+                        math.tanh(default_role),
+                        math.tanh(base_role - default_role),
+                        math.tanh(base_joint),
+                        math.tanh(default_joint),
+                        math.tanh(base_joint - default_joint),
+                        math.tanh(0.25 * base_support_gap),
+                        math.tanh(0.25 * default_support_gap),
+                    ],
+                    dtype=np.float32,
+                )
+                pieces.append(rich_scalars)
+                pieces.append(pair_code.astype(np.float32, copy=False))
+            else:
+                pieces.append(np.zeros(8, dtype=np.float32))
+                pieces.append(np.zeros(self.state_dim, dtype=np.float32))
         return phase.normalize_vector(np.concatenate(pieces).astype(np.float32))
 
     def branch_arbiter_scores(self, feature: np.ndarray) -> np.ndarray:
+        scores, _ = self.branch_arbiter_scores_and_counts(feature)
+        return scores
+
+    def branch_arbiter_scores_and_counts(self, feature: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if self.branch_arbiter_prototypes is None or self.branch_arbiter_counts is None:
-            return np.zeros(len(self.branch_arbiter_variants), dtype=np.float32)
+            return (
+                np.zeros(len(self.branch_arbiter_variants), dtype=np.float32),
+                np.zeros(len(self.branch_arbiter_variants), dtype=np.float32),
+            )
         scores = np.zeros(len(self.branch_arbiter_variants), dtype=np.float32)
+        best_counts = np.zeros(len(self.branch_arbiter_variants), dtype=np.float32)
         active_variants = np.flatnonzero(np.any(self.branch_arbiter_counts > 0.0, axis=1))
         for variant_idx in active_variants:
             counts = self.branch_arbiter_counts[variant_idx]
             dots = self.branch_arbiter_prototypes[variant_idx] @ feature
             dots = np.where(counts > 0.0, dots, -np.inf)
-            scores[variant_idx] = float(self.role_branch_arbiter_score_scale) * float(np.max(dots))
-        return scores
+            best_slot = int(np.argmax(dots))
+            scores[variant_idx] = float(self.role_branch_arbiter_score_scale) * float(dots[best_slot])
+            best_counts[variant_idx] = float(counts[best_slot])
+        return scores, best_counts
 
     def branch_rescue_evidence(self) -> tuple[float, float]:
         role_evidence = float(np.max(self.last_role_scores)) if self.last_role_scores.size else 0.0
@@ -2320,12 +4619,15 @@ class OnlineLocalRoleTransitionMemory:
             else:
                 feature = self.branch_arbiter_feature(components)
                 self.last_branch_arbiter_feature = feature
-                scores = self.branch_arbiter_scores(feature)
+                scores, best_counts = self.branch_arbiter_scores_and_counts(feature)
                 base_idx = self.branch_arbiter_index("base_only")
                 default_idx = self.branch_arbiter_index(self.role_branch_arbiter_default)
                 if self.branch_arbiter_counts is None or not np.any(self.branch_arbiter_counts > 0.0):
                     chosen_idx = default_idx
-                elif float(scores[base_idx]) > float(scores[default_idx]) + self.role_branch_arbiter_margin:
+                elif (
+                    float(best_counts[base_idx]) >= self.role_branch_arbiter_min_count
+                    and float(scores[base_idx]) > float(scores[default_idx]) + self.role_branch_arbiter_margin
+                ):
                     chosen_idx = base_idx
                 else:
                     chosen_idx = default_idx
@@ -2783,6 +5085,17 @@ class OnlineLocalRoleTransitionMemory:
             + self.edge_path_cleanup_updates.nbytes
             + self.edge_path_cleanup_wrong_updates.nbytes
             + self.edge_path_cleanup_wins.nbytes
+            + self.edge_path_transient_inhibit_trace.nbytes
+            + self.edge_path_transient_inhibit_updates.nbytes
+            + self.edge_path_transient_boost_trace.nbytes
+            + self.edge_path_transient_boost_updates.nbytes
+            + self.edge_path_transient_boost_consistency_skips.nbytes
+            + self.edge_path_transient_boost_learned_skips.nbytes
+            + self.edge_path_transient_boost_counterfactual_skips.nbytes
+            + self.edge_path_runner_arbiter_prototypes.nbytes
+            + self.edge_path_runner_arbiter_counts.nbytes
+            + self.edge_path_runner_arbiter_updates.nbytes
+            + self.edge_path_runner_arbiter_wrong_updates.nbytes
             + self.edge_path_direct_prototypes.nbytes
             + self.edge_path_direct_counts.nbytes
             + self.edge_path_direct_updates.nbytes
@@ -2801,6 +5114,46 @@ class OnlineLocalRoleTransitionMemory:
             total += int(self.joint_suppress_prototypes.nbytes + self.joint_suppress_counts.nbytes)
         if self.branch_arbiter_prototypes is not None and self.branch_arbiter_counts is not None:
             total += int(self.branch_arbiter_prototypes.nbytes + self.branch_arbiter_counts.nbytes)
+        if (
+            self.edge_path_runner_arbiter_negative_prototypes is not None
+            and self.edge_path_runner_arbiter_negative_counts is not None
+        ):
+            total += int(
+                self.edge_path_runner_arbiter_negative_prototypes.nbytes
+                + self.edge_path_runner_arbiter_negative_counts.nbytes
+            )
+        if self.edge_path_runner_arbiter_gap_codes is not None:
+            total += int(self.edge_path_runner_arbiter_gap_codes.nbytes)
+        if self.edge_path_homeostasis_trace is not None:
+            total += int(self.edge_path_homeostasis_trace.nbytes + self.edge_path_homeostasis_updates.nbytes)
+        if (
+            self.edge_path_closure_proto_positive is not None
+            and self.edge_path_closure_proto_positive_counts is not None
+            and self.edge_path_closure_proto_negative is not None
+            and self.edge_path_closure_proto_negative_counts is not None
+        ):
+            total += int(
+                self.edge_path_closure_proto_positive.nbytes
+                + self.edge_path_closure_proto_positive_counts.nbytes
+                + self.edge_path_closure_proto_negative.nbytes
+                + self.edge_path_closure_proto_negative_counts.nbytes
+                + self.edge_path_closure_proto_updates.nbytes
+                + self.edge_path_closure_proto_wrong_updates.nbytes
+            )
+        if (
+            self.edge_path_affinity_positive is not None
+            and self.edge_path_affinity_positive_counts is not None
+            and self.edge_path_affinity_negative is not None
+            and self.edge_path_affinity_negative_counts is not None
+        ):
+            total += int(
+                self.edge_path_affinity_positive.nbytes
+                + self.edge_path_affinity_positive_counts.nbytes
+                + self.edge_path_affinity_negative.nbytes
+                + self.edge_path_affinity_negative_counts.nbytes
+                + self.edge_path_affinity_updates.nbytes
+                + self.edge_path_affinity_wrong_updates.nbytes
+            )
         return total
 
     def event_cache_stats(self) -> dict[str, Any]:
@@ -2839,11 +5192,15 @@ class OnlineLocalRoleTransitionMemory:
             "role_branch_arbiter_wrong_lr": self.role_branch_arbiter_wrong_lr,
             "role_branch_arbiter_score_scale": self.role_branch_arbiter_score_scale,
             "role_branch_arbiter_margin": self.role_branch_arbiter_margin,
+            "role_branch_arbiter_min_count": self.role_branch_arbiter_min_count,
             "role_branch_arbiter_base_margin": self.role_branch_arbiter_base_margin,
             "role_branch_arbiter_threshold_lr": self.role_branch_arbiter_threshold_lr,
             "role_branch_arbiter_rescue_role_threshold": self.role_branch_arbiter_rescue_role_threshold,
             "role_branch_arbiter_rescue_joint_threshold": self.role_branch_arbiter_rescue_joint_threshold,
             "role_branch_arbiter_joint_variants": self.role_branch_arbiter_joint_variants,
+            "role_branch_arbiter_rich_conflict_features": (
+                self.role_branch_arbiter_rich_conflict_features
+            ),
             "role_branch_arbiter_variants": list(self.branch_arbiter_variants),
             "role_branch_arbiter_threshold": self.branch_arbiter_threshold,
             "role_branch_arbiter_checks": self.branch_arbiter_checks,
@@ -2897,16 +5254,235 @@ class OnlineLocalRoleTransitionMemory:
             "edge_path_cleanup_score_scale": self.edge_path_cleanup_score_scale,
             "edge_path_cleanup_top_k": self.edge_path_cleanup_top_k,
             "edge_path_cleanup_inhibit": self.edge_path_cleanup_inhibit,
+            "edge_path_cleanup_credit_mode": self.edge_path_cleanup_credit_mode,
             "edge_path_soft_top_k": self.edge_path_soft_top_k,
             "edge_path_soft_temperature": self.edge_path_soft_temperature,
             "edge_path_soft_consistency_scale": self.edge_path_soft_consistency_scale,
             "edge_path_soft_learned_scale": self.edge_path_soft_learned_scale,
+            "edge_path_closure_score_scale": self.edge_path_closure_score_scale,
+            "edge_path_closure_proto_slots": self.edge_path_closure_proto_slots,
+            "edge_path_closure_proto_lr": self.edge_path_closure_proto_lr,
+            "edge_path_closure_proto_wrong_lr": self.edge_path_closure_proto_wrong_lr,
+            "edge_path_closure_proto_score_scale": self.edge_path_closure_proto_score_scale,
+            "edge_path_closure_proto_min_count": self.edge_path_closure_proto_min_count,
+            "edge_path_closure_proto_positive_active": int(
+                0
+                if self.edge_path_closure_proto_positive_counts is None
+                else np.count_nonzero(self.edge_path_closure_proto_positive_counts)
+            ),
+            "edge_path_closure_proto_negative_active": int(
+                0
+                if self.edge_path_closure_proto_negative_counts is None
+                else np.count_nonzero(self.edge_path_closure_proto_negative_counts)
+            ),
+            "edge_path_closure_proto_updates": [
+                int(x) for x in self.edge_path_closure_proto_updates
+            ],
+            "edge_path_closure_proto_wrong_updates": [
+                int(x) for x in self.edge_path_closure_proto_wrong_updates
+            ],
+            "edge_path_closure_proto_score_checks": int(self.edge_path_closure_proto_score_checks),
+            "edge_path_closure_proto_score_applied": int(self.edge_path_closure_proto_score_applied),
+            "edge_path_closure_proto_score_count_skips": int(
+                self.edge_path_closure_proto_score_count_skips
+            ),
+            "edge_path_closure_proto_positive_max_count": float(
+                0.0
+                if self.edge_path_closure_proto_positive_counts is None
+                else np.max(self.edge_path_closure_proto_positive_counts)
+            ),
+            "edge_path_closure_proto_negative_max_count": float(
+                0.0
+                if self.edge_path_closure_proto_negative_counts is None
+                else np.max(self.edge_path_closure_proto_negative_counts)
+            ),
+            "edge_path_affinity_slots": self.edge_path_affinity_slots,
+            "edge_path_affinity_lr": self.edge_path_affinity_lr,
+            "edge_path_affinity_wrong_lr": self.edge_path_affinity_wrong_lr,
+            "edge_path_affinity_score_scale": self.edge_path_affinity_score_scale,
+            "edge_path_affinity_min_count": self.edge_path_affinity_min_count,
+            "edge_path_affinity_margin_gate": self.edge_path_affinity_margin_gate,
+            "edge_path_affinity_learned_dominance": self.edge_path_affinity_learned_dominance,
+            "edge_path_affinity_consistency_protect": self.edge_path_affinity_consistency_protect,
+            "edge_path_affinity_positive_active": int(
+                0
+                if self.edge_path_affinity_positive_counts is None
+                else np.count_nonzero(self.edge_path_affinity_positive_counts)
+            ),
+            "edge_path_affinity_negative_active": int(
+                0
+                if self.edge_path_affinity_negative_counts is None
+                else np.count_nonzero(self.edge_path_affinity_negative_counts)
+            ),
+            "edge_path_affinity_updates": [
+                int(x) for x in self.edge_path_affinity_updates
+            ],
+            "edge_path_affinity_wrong_updates": [
+                int(x) for x in self.edge_path_affinity_wrong_updates
+            ],
+            "edge_path_affinity_score_checks": int(self.edge_path_affinity_score_checks),
+            "edge_path_affinity_score_applied": int(self.edge_path_affinity_score_applied),
+            "edge_path_affinity_score_count_skips": int(
+                self.edge_path_affinity_score_count_skips
+            ),
+            "edge_path_affinity_gate_checks": int(self.edge_path_affinity_gate_checks),
+            "edge_path_affinity_gate_passes": int(self.edge_path_affinity_gate_passes),
+            "edge_path_affinity_gate_near_passes": int(self.edge_path_affinity_gate_near_passes),
+            "edge_path_affinity_gate_conflict_passes": int(
+                self.edge_path_affinity_gate_conflict_passes
+            ),
+            "edge_path_affinity_gate_skips": int(self.edge_path_affinity_gate_skips),
+            "edge_path_affinity_positive_max_count": float(
+                0.0
+                if self.edge_path_affinity_positive_counts is None
+                else np.max(self.edge_path_affinity_positive_counts)
+            ),
+            "edge_path_affinity_negative_max_count": float(
+                0.0
+                if self.edge_path_affinity_negative_counts is None
+                else np.max(self.edge_path_affinity_negative_counts)
+            ),
             "edge_path_cleanup_checks": self.edge_path_cleanup_checks,
             "edge_path_cleanup_avg_candidates": avg_candidates,
             "edge_path_cleanup_active_slots": int(np.count_nonzero(self.edge_path_cleanup_counts)),
             "edge_path_cleanup_updates": [int(x) for x in self.edge_path_cleanup_updates],
             "edge_path_cleanup_wrong_updates": [int(x) for x in self.edge_path_cleanup_wrong_updates],
             "edge_path_cleanup_wins": [int(x) for x in self.edge_path_cleanup_wins],
+            "edge_path_transient_inhibit_scale": self.edge_path_transient_inhibit_scale,
+            "edge_path_transient_inhibit_lr": self.edge_path_transient_inhibit_lr,
+            "edge_path_transient_inhibit_decay": self.edge_path_transient_inhibit_decay,
+            "edge_path_transient_inhibit_key": self.edge_path_transient_inhibit_key,
+            "edge_path_transient_inhibit_hash_size": self.edge_path_transient_inhibit_hash_size,
+            "edge_path_transient_inhibit_active": int(
+                np.count_nonzero(self.edge_path_transient_inhibit_trace > 1e-6)
+            ),
+            "edge_path_transient_inhibit_updates": [
+                int(x) for x in self.edge_path_transient_inhibit_updates
+            ],
+            "edge_path_transient_inhibit_max": float(np.max(self.edge_path_transient_inhibit_trace)),
+            "edge_path_transient_boost_scale": self.edge_path_transient_boost_scale,
+            "edge_path_transient_boost_lr": self.edge_path_transient_boost_lr,
+            "edge_path_transient_boost_support_margin": self.edge_path_transient_boost_support_margin,
+            "edge_path_transient_boost_consistency_margin": (
+                self.edge_path_transient_boost_consistency_margin
+            ),
+            "edge_path_transient_boost_runner_learned_max": (
+                self.edge_path_transient_boost_runner_learned_max
+            ),
+            "edge_path_transient_boost_counterfactual_min_gain": (
+                self.edge_path_transient_boost_counterfactual_min_gain
+            ),
+            "edge_path_transient_boost_active": int(
+                np.count_nonzero(self.edge_path_transient_boost_trace > 1e-6)
+            ),
+            "edge_path_transient_boost_updates": [
+                int(x) for x in self.edge_path_transient_boost_updates
+            ],
+            "edge_path_transient_boost_consistency_skips": [
+                int(x) for x in self.edge_path_transient_boost_consistency_skips
+            ],
+            "edge_path_transient_boost_learned_skips": [
+                int(x) for x in self.edge_path_transient_boost_learned_skips
+            ],
+            "edge_path_transient_boost_counterfactual_skips": [
+                int(x) for x in self.edge_path_transient_boost_counterfactual_skips
+            ],
+            "edge_path_transient_boost_max": float(np.max(self.edge_path_transient_boost_trace)),
+            "edge_path_homeostasis_scale": self.edge_path_homeostasis_scale,
+            "edge_path_homeostasis_lr": self.edge_path_homeostasis_lr,
+            "edge_path_homeostasis_decay": self.edge_path_homeostasis_decay,
+            "edge_path_homeostasis_min_slot": self.edge_path_homeostasis_min_slot,
+            "edge_path_homeostasis_learned_dominance": (
+                self.edge_path_homeostasis_learned_dominance
+            ),
+            "edge_path_homeostasis_structure_margin": self.edge_path_homeostasis_structure_margin,
+            "edge_path_homeostasis_soft_mod_scale": self.edge_path_homeostasis_soft_mod_scale,
+            "edge_path_homeostasis_soft_mod_floor": self.edge_path_homeostasis_soft_mod_floor,
+            "edge_path_homeostasis_trace_threshold": self.edge_path_homeostasis_trace_threshold,
+            "edge_path_homeostasis_trace_gain": self.edge_path_homeostasis_trace_gain,
+            "edge_path_homeostasis_active": int(
+                0
+                if self.edge_path_homeostasis_trace is None
+                else np.count_nonzero(self.edge_path_homeostasis_trace > 1e-6)
+            ),
+            "edge_path_homeostasis_updates": [
+                int(x) for x in self.edge_path_homeostasis_updates
+            ],
+            "edge_path_homeostasis_max": float(
+                0.0
+                if self.edge_path_homeostasis_trace is None
+                else np.max(self.edge_path_homeostasis_trace)
+            ),
+            "edge_path_homeostasis_gate_checks": int(self.edge_path_homeostasis_gate_checks),
+            "edge_path_homeostasis_gate_passes": int(self.edge_path_homeostasis_gate_passes),
+            "edge_path_homeostasis_gate_skips": int(self.edge_path_homeostasis_gate_skips),
+            "edge_path_homeostasis_soft_mod_checks": int(
+                self.edge_path_homeostasis_soft_mod_checks
+            ),
+            "edge_path_homeostasis_soft_mod_mean": float(
+                self.edge_path_homeostasis_soft_mod_sum
+                / max(self.edge_path_homeostasis_soft_mod_checks, 1)
+            ),
+            "edge_path_homeostasis_soft_mod_min": float(
+                0.0
+                if self.edge_path_homeostasis_soft_mod_checks == 0
+                else self.edge_path_homeostasis_soft_mod_min
+            ),
+            "edge_path_homeostasis_soft_mod_max": float(
+                0.0
+                if self.edge_path_homeostasis_soft_mod_checks == 0
+                else self.edge_path_homeostasis_soft_mod_max
+            ),
+            "edge_path_homeostasis_trace_mod_checks": int(
+                self.edge_path_homeostasis_trace_mod_checks
+            ),
+            "edge_path_homeostasis_trace_mod_raw_mean": float(
+                self.edge_path_homeostasis_trace_mod_raw_sum
+                / max(self.edge_path_homeostasis_trace_mod_checks, 1)
+            ),
+            "edge_path_homeostasis_trace_mod_effective_mean": float(
+                self.edge_path_homeostasis_trace_mod_effective_sum
+                / max(self.edge_path_homeostasis_trace_mod_checks, 1)
+            ),
+            "edge_path_homeostasis_trace_mod_active_rate": float(
+                self.edge_path_homeostasis_trace_mod_active
+                / max(self.edge_path_homeostasis_trace_mod_checks, 1)
+            ),
+            "edge_path_runner_arbiter_slots": self.edge_path_runner_arbiter_slots,
+            "edge_path_runner_arbiter_lr": self.edge_path_runner_arbiter_lr,
+            "edge_path_runner_arbiter_wrong_lr": self.edge_path_runner_arbiter_wrong_lr,
+            "edge_path_runner_arbiter_score_scale": self.edge_path_runner_arbiter_score_scale,
+            "edge_path_runner_arbiter_margin": self.edge_path_runner_arbiter_margin,
+            "edge_path_runner_arbiter_min_count": self.edge_path_runner_arbiter_min_count,
+            "edge_path_runner_arbiter_negative_mode": self.edge_path_runner_arbiter_negative_mode,
+            "edge_path_runner_arbiter_feature_mode": self.edge_path_runner_arbiter_feature_mode,
+            "edge_path_runner_arbiter_gap_scale": self.edge_path_runner_arbiter_gap_scale,
+            "edge_path_runner_arbiter_credit_mode": self.edge_path_runner_arbiter_credit_mode,
+            "edge_path_runner_arbiter_active_slots": int(
+                np.count_nonzero(self.edge_path_runner_arbiter_counts)
+            ),
+            "edge_path_runner_arbiter_negative_active_slots": int(
+                0
+                if self.edge_path_runner_arbiter_negative_counts is None
+                else np.count_nonzero(self.edge_path_runner_arbiter_negative_counts)
+            ),
+            "edge_path_runner_arbiter_updates": [
+                int(x) for x in self.edge_path_runner_arbiter_updates
+            ],
+            "edge_path_runner_arbiter_wrong_updates": [
+                int(x) for x in self.edge_path_runner_arbiter_wrong_updates
+            ],
+            "edge_path_runner_arbiter_score_checks": int(self.edge_path_runner_arbiter_score_checks),
+            "edge_path_runner_arbiter_score_applied": int(self.edge_path_runner_arbiter_score_applied),
+            "edge_path_runner_arbiter_score_count_skips": int(
+                self.edge_path_runner_arbiter_score_count_skips
+            ),
+            "edge_path_runner_arbiter_max_count": float(np.max(self.edge_path_runner_arbiter_counts)),
+            "edge_path_runner_arbiter_negative_max_count": float(
+                0.0
+                if self.edge_path_runner_arbiter_negative_counts is None
+                else np.max(self.edge_path_runner_arbiter_negative_counts)
+            ),
         }
 
     def edge_path_direct_stats(self) -> dict[str, Any]:
@@ -2916,6 +5492,10 @@ class OnlineLocalRoleTransitionMemory:
             "edge_path_direct_lr": self.edge_path_direct_lr,
             "edge_path_direct_wrong_lr": self.edge_path_direct_wrong_lr,
             "edge_path_direct_score_scale": self.edge_path_direct_score_scale,
+            "edge_path_direct_mode": self.edge_path_direct_mode,
+            "edge_path_structured_side_weight": self.edge_path_structured_side_weight,
+            "edge_path_structured_path_weight": self.edge_path_structured_path_weight,
+            "edge_path_structured_other_weight": self.edge_path_structured_other_weight,
             "edge_path_direct_active_slots": int(np.count_nonzero(self.edge_path_direct_counts)),
             "edge_path_direct_updates": [int(x) for x in self.edge_path_direct_updates],
             "edge_path_direct_wrong_updates": [int(x) for x in self.edge_path_direct_wrong_updates],
@@ -2925,6 +5505,19 @@ class OnlineLocalRoleTransitionMemory:
     def active_contexts(self) -> int:
         edge_cleanup = int(np.count_nonzero(self.edge_path_cleanup_counts))
         edge_direct = int(np.count_nonzero(self.edge_path_direct_counts))
+        edge_transient = int(np.count_nonzero(self.edge_path_transient_inhibit_trace > 1e-6))
+        edge_boost = int(np.count_nonzero(self.edge_path_transient_boost_trace > 1e-6))
+        edge_homeostasis = int(
+            0
+            if self.edge_path_homeostasis_trace is None
+            else np.count_nonzero(self.edge_path_homeostasis_trace > 1e-6)
+        )
+        edge_runner_arbiter = int(np.count_nonzero(self.edge_path_runner_arbiter_counts))
+        edge_affinity = int(
+            0
+            if self.edge_path_affinity_positive_counts is None
+            else np.count_nonzero(self.edge_path_affinity_positive_counts)
+        )
         if self.role_branch_readout:
             base = np.count_nonzero(self.base_branch_counts) if self.base_branch_counts is not None else 0
             role = np.count_nonzero(self.role_branch_counts) if self.role_branch_counts is not None else 0
@@ -2935,9 +5528,31 @@ class OnlineLocalRoleTransitionMemory:
                 else 0
             )
             arbiter = np.count_nonzero(self.branch_arbiter_counts) if self.branch_arbiter_counts is not None else 0
-            return int(base + role + joint + suppress + arbiter + edge_cleanup + edge_direct)
+            return int(
+                base
+                + role
+                + joint
+                + suppress
+                + arbiter
+                + edge_cleanup
+                + edge_direct
+                + edge_transient
+                + edge_boost
+                + edge_homeostasis
+                + edge_runner_arbiter
+                + edge_affinity
+            )
         base = int(np.count_nonzero(self.prototype_counts)) if self.prototype_counts is not None else 0
-        return int(base + edge_cleanup + edge_direct)
+        return int(
+            base
+            + edge_cleanup
+            + edge_direct
+            + edge_transient
+            + edge_boost
+            + edge_homeostasis
+            + edge_runner_arbiter
+            + edge_affinity
+        )
 
 
 class AnswerSlotReadoutMemory:
@@ -2978,10 +5593,23 @@ class AnswerSlotReadoutMemory:
         conflict_rescue_score_scale: float,
         conflict_rescue_top_k: int,
         conflict_rescue_min_slot: int,
+        conflict_rescue_min_support: float,
         conflict_rescue_prefix_gate: str,
         conflict_rescue_prefix_margin: float,
         predicted_prefix_credit: str,
         predicted_prefix_skip_teacher_match: bool,
+        predicted_prefix_target_top_k: int,
+        predicted_prefix_lr_scale: float,
+        predicted_prefix_coupling_wrong_credit: bool,
+        candidate_arbiter_rank: int,
+        candidate_arbiter_lr: float,
+        candidate_arbiter_score_scale: float,
+        candidate_arbiter_top_k: int,
+        candidate_arbiter_min_support: float,
+        candidate_arbiter_min_slot: int,
+        candidate_arbiter_projection_decay: float,
+        candidate_arbiter_clip: float,
+        seed: int,
     ) -> None:
         self.base = base
         self.slot_count = max(int(slot_count), 1)
@@ -3012,6 +5640,7 @@ class AnswerSlotReadoutMemory:
         self.conflict_rescue_score_scale = float(max(conflict_rescue_score_scale, 0.0))
         self.conflict_rescue_top_k = max(int(conflict_rescue_top_k), 1)
         self.conflict_rescue_min_slot = max(int(conflict_rescue_min_slot), 0)
+        self.conflict_rescue_min_support = float(max(conflict_rescue_min_support, 0.0))
         self.conflict_rescue_prefix_gate = str(conflict_rescue_prefix_gate)
         self.conflict_rescue_prefix_margin = float(max(conflict_rescue_prefix_margin, 0.0))
         if self.conflict_rescue_prefix_gate not in {
@@ -3027,6 +5656,24 @@ class AnswerSlotReadoutMemory:
         if self.predicted_prefix_credit not in {"none", "coupling", "conflict", "coupling_conflict"}:
             raise ValueError(f"unknown predicted-prefix credit: {self.predicted_prefix_credit}")
         self.predicted_prefix_skip_teacher_match = bool(predicted_prefix_skip_teacher_match)
+        self.predicted_prefix_target_top_k = max(int(predicted_prefix_target_top_k), 0)
+        self.predicted_prefix_lr_scale = float(
+            np.clip(float(predicted_prefix_lr_scale), 0.0, 1.0)
+        )
+        self.predicted_prefix_coupling_wrong_credit = bool(
+            predicted_prefix_coupling_wrong_credit
+        )
+        self.candidate_arbiter_rank = max(int(candidate_arbiter_rank), 1)
+        self.candidate_arbiter_lr = float(np.clip(candidate_arbiter_lr, 0.0, 1.0))
+        self.candidate_arbiter_score_scale = float(max(candidate_arbiter_score_scale, 0.0))
+        self.candidate_arbiter_top_k = max(int(candidate_arbiter_top_k), 1)
+        self.candidate_arbiter_min_support = float(max(candidate_arbiter_min_support, 0.0))
+        self.candidate_arbiter_min_slot = max(int(candidate_arbiter_min_slot), 0)
+        self.candidate_arbiter_projection_decay = float(
+            np.clip(candidate_arbiter_projection_decay, 0.0, 1.0)
+        )
+        self.candidate_arbiter_clip = float(max(candidate_arbiter_clip, 0.0))
+        self.candidate_arbiter_seed = int(seed)
         if self.feature_mode not in {
             "base",
             "role_hop",
@@ -3048,6 +5695,10 @@ class AnswerSlotReadoutMemory:
         self.conflict_rescue_prototypes: np.ndarray | None = None
         self.conflict_rescue_counts: np.ndarray | None = None
         self.conflict_rescue_feature_dim = 0
+        self.candidate_arbiter_encoder: np.ndarray | None = None
+        self.candidate_arbiter_projection: np.ndarray | None = None
+        self.candidate_arbiter_feature_dim = 0
+        self.candidate_arbiter_code_dim = 0
         self.slot_updates = np.zeros(self.slot_count, dtype=np.int64)
         self.slot_wrong_updates = np.zeros(self.slot_count, dtype=np.int64)
         self.coupling_updates = np.zeros(self.slot_count, dtype=np.int64)
@@ -3055,17 +5706,25 @@ class AnswerSlotReadoutMemory:
         self.wrong_cleanup_updates = np.zeros(self.slot_count, dtype=np.int64)
         self.wrong_cleanup_disinhibit_updates = np.zeros(self.slot_count, dtype=np.int64)
         self.conflict_rescue_updates = np.zeros(self.slot_count, dtype=np.int64)
+        self.candidate_arbiter_updates = np.zeros(self.slot_count, dtype=np.int64)
+        self.candidate_arbiter_score_checks = 0
+        self.candidate_arbiter_support_gate_checks = 0
+        self.candidate_arbiter_support_gate_blocked = 0
         self.wrong_cleanup_score_checks = 0
         self.wrong_cleanup_score_protected = 0
         self.conflict_rescue_score_checks = 0
         self.conflict_rescue_score_applied = 0
+        self.conflict_rescue_support_gate_checks = 0
+        self.conflict_rescue_support_gate_blocked = 0
         self.conflict_rescue_prefix_gate_checks = 0
         self.conflict_rescue_prefix_gate_applied = 0
         self.conflict_rescue_prefix_gate_blocked = 0
         self.predicted_prefix_checks = 0
         self.predicted_prefix_updates = 0
         self.predicted_prefix_skipped_teacher_match = 0
+        self.predicted_prefix_target_rank_skips = 0
         self.predicted_prefix_coupling_updates = 0
+        self.predicted_prefix_coupling_wrong_updates = 0
         self.predicted_prefix_conflict_updates = 0
         self.direct_gate_checks = 0
         self.direct_gate_applied = 0
@@ -3173,6 +5832,7 @@ class AnswerSlotReadoutMemory:
             self.coupling_score_scale <= 0.0
             and self.wrong_cleanup_score_scale <= 0.0
             and self.conflict_rescue_score_scale <= 0.0
+            and self.candidate_arbiter_score_scale <= 0.0
         ) or int(slot) <= 0:
             return None
         code = self.previous_token_code(context)
@@ -3194,6 +5854,19 @@ class AnswerSlotReadoutMemory:
         winner_feature = self.resized_code(winner_code, dim)
         candidate_feature = self.resized_code(candidate_code, dim)
         return phase.normalize_vector((feature * winner_feature * candidate_feature).astype(np.float32))
+
+    def conflict_feature(
+        self,
+        context: Sequence[int] | np.ndarray,
+        feature: np.ndarray,
+        slot: int,
+    ) -> np.ndarray | None:
+        coupling_feature = self.coupling_feature(context, feature, slot)
+        if coupling_feature is not None:
+            return coupling_feature
+        if self.conflict_rescue_score_scale <= 0.0 or int(slot) < self.conflict_rescue_min_slot:
+            return None
+        return feature
 
     def ensure_coupling_banks(self, feature: np.ndarray) -> None:
         if self.coupling_prototypes is not None and self.coupling_counts is not None:
@@ -3233,6 +5906,158 @@ class AnswerSlotReadoutMemory:
             (self.slot_count, self.vocab_size, self.conflict_rescue_slots),
             dtype=np.float32,
         )
+
+    def candidate_arbiter_feature(
+        self,
+        context: Sequence[int] | np.ndarray,
+        feature: np.ndarray,
+        slot: int,
+    ) -> np.ndarray:
+        coupling_feature = self.coupling_feature(context, feature, slot)
+        if coupling_feature is not None:
+            return coupling_feature
+        return feature.astype(np.float32, copy=False)
+
+    def ensure_candidate_arbiter(self, feature: np.ndarray) -> bool:
+        if self.candidate_arbiter_encoder is not None and self.candidate_arbiter_projection is not None:
+            return True
+        if not hasattr(self.base, "token_codes"):
+            return False
+        token_codes = np.asarray(self.base.token_codes, dtype=np.float32)
+        if token_codes.ndim != 2 or token_codes.shape[0] != self.vocab_size:
+            return False
+        self.candidate_arbiter_feature_dim = int(feature.shape[0])
+        self.candidate_arbiter_code_dim = int(token_codes.shape[1])
+        rng = np.random.default_rng(self.candidate_arbiter_seed + 7919)
+        encoder = rng.standard_normal(
+            (self.candidate_arbiter_rank, self.candidate_arbiter_feature_dim),
+            dtype=np.float32,
+        )
+        self.candidate_arbiter_encoder = phase.normalize_rows(encoder)
+        self.candidate_arbiter_projection = np.zeros(
+            (self.candidate_arbiter_code_dim, self.candidate_arbiter_rank),
+            dtype=np.float32,
+        )
+        return True
+
+    def candidate_arbiter_latent(self, feature: np.ndarray) -> np.ndarray | None:
+        if not self.ensure_candidate_arbiter(feature):
+            return None
+        assert self.candidate_arbiter_encoder is not None
+        if feature.shape[0] != self.candidate_arbiter_feature_dim:
+            return None
+        latent = self.candidate_arbiter_encoder @ feature.astype(np.float32, copy=False)
+        return phase.normalize_vector(latent.astype(np.float32))
+
+    def candidate_arbiter_scores_from_feature(
+        self,
+        feature: np.ndarray,
+        slot: int,
+        pre_scores: np.ndarray,
+        support_scores: np.ndarray | None = None,
+    ) -> np.ndarray:
+        scores = np.zeros(self.vocab_size, dtype=np.float32)
+        if self.candidate_arbiter_score_scale <= 0.0 or int(slot) < self.candidate_arbiter_min_slot:
+            return scores
+        if not self.ensure_candidate_arbiter(feature):
+            return scores
+        assert self.candidate_arbiter_projection is not None
+        if not np.any(self.candidate_arbiter_projection):
+            return scores
+        latent = self.candidate_arbiter_latent(feature)
+        if latent is None:
+            return scores
+        residual = self.candidate_arbiter_projection @ latent
+        if not np.any(residual):
+            return scores
+        residual = phase.normalize_vector(residual.astype(np.float32))
+        token_codes = np.asarray(self.base.token_codes, dtype=np.float32)
+        raw_scores = float(self.candidate_arbiter_score_scale) * (token_codes @ residual)
+        candidates = self.top_k_indices(np.asarray(pre_scores, dtype=np.float32), self.candidate_arbiter_top_k)
+        if not candidates:
+            return scores
+        if self.candidate_arbiter_min_support > 0.0 and support_scores is not None:
+            support = np.asarray(support_scores, dtype=np.float32)
+            kept: list[int] = []
+            for candidate in candidates:
+                self.candidate_arbiter_support_gate_checks += 1
+                if float(support[int(candidate)]) >= self.candidate_arbiter_min_support:
+                    kept.append(int(candidate))
+                else:
+                    self.candidate_arbiter_support_gate_blocked += 1
+            candidates = kept
+            if not candidates:
+                return scores
+        local = raw_scores[candidates].astype(np.float32, copy=True)
+        if local.size > 1:
+            local = local - float(np.mean(local))
+        scores[candidates] = local
+        self.candidate_arbiter_score_checks += len(candidates)
+        return scores.astype(np.float32)
+
+    def update_candidate_arbiter(
+        self,
+        slot_idx: int,
+        target: int,
+        feature: np.ndarray,
+        scores: np.ndarray,
+        support_scores: np.ndarray | None = None,
+    ) -> None:
+        if (
+            self.candidate_arbiter_score_scale <= 0.0
+            or self.candidate_arbiter_lr <= 0.0
+            or int(slot_idx) < self.candidate_arbiter_min_slot
+        ):
+            return
+        if not self.ensure_candidate_arbiter(feature):
+            return
+        latent = self.candidate_arbiter_latent(feature)
+        if latent is None or not np.any(latent):
+            return
+        assert self.candidate_arbiter_projection is not None
+        token_codes = np.asarray(self.base.token_codes, dtype=np.float32)
+        target = int(target)
+        if target < 0 or target >= token_codes.shape[0]:
+            return
+        support: np.ndarray | None = None
+        if self.candidate_arbiter_min_support > 0.0 and support_scores is not None:
+            support = np.asarray(support_scores, dtype=np.float32)
+            self.candidate_arbiter_support_gate_checks += 1
+            if float(support[target]) < self.candidate_arbiter_min_support:
+                self.candidate_arbiter_support_gate_blocked += 1
+                return
+        if self.candidate_arbiter_projection_decay < 1.0:
+            self.candidate_arbiter_projection *= self.candidate_arbiter_projection_decay
+        adjusted = scores.astype(np.float32, copy=True)
+        target_score = float(adjusted[target])
+        adjusted[target] = -np.inf
+        wrongs = self.top_k_indices(adjusted, self.candidate_arbiter_top_k)
+        applied = 0
+        for wrong in wrongs:
+            wrong = int(wrong)
+            if wrong < 0 or wrong >= token_codes.shape[0]:
+                continue
+            if not np.isfinite(float(adjusted[wrong])) or float(adjusted[wrong]) <= target_score:
+                continue
+            if support is not None:
+                self.candidate_arbiter_support_gate_checks += 1
+                if float(support[wrong]) < self.candidate_arbiter_min_support:
+                    self.candidate_arbiter_support_gate_blocked += 1
+                    continue
+            direction = phase.normalize_vector(
+                (token_codes[target] - token_codes[wrong]).astype(np.float32)
+            )
+            step = self.candidate_arbiter_lr / max(len(wrongs), 1)
+            self.candidate_arbiter_projection += step * np.outer(direction, latent).astype(np.float32)
+            applied += 1
+        if applied > 0:
+            np.clip(
+                self.candidate_arbiter_projection,
+                -self.candidate_arbiter_clip,
+                self.candidate_arbiter_clip,
+                out=self.candidate_arbiter_projection,
+            )
+            self.candidate_arbiter_updates[slot_idx] += applied
 
     def slot_scores_from_feature(self, feature: np.ndarray, slot: int) -> np.ndarray:
         scores = np.zeros(self.vocab_size, dtype=np.float32)
@@ -3329,12 +6154,18 @@ class AnswerSlotReadoutMemory:
             return scores
         winner = int(np.argmax(pre_scores))
         pool = set(self.top_k_indices(np.asarray(pre_scores, dtype=np.float32), self.conflict_rescue_top_k))
-        pool.update(self.top_k_indices(np.asarray(support_scores, dtype=np.float32), self.conflict_rescue_top_k))
+        support_arr = np.asarray(support_scores, dtype=np.float32)
+        pool.update(self.top_k_indices(support_arr, self.conflict_rescue_top_k))
         pool.discard(winner)
         for candidate in sorted(pool):
             active = counts[candidate] > 0.0
             if not np.any(active):
                 continue
+            if self.conflict_rescue_min_support > 0.0:
+                self.conflict_rescue_support_gate_checks += 1
+                if float(support_arr[candidate]) < self.conflict_rescue_min_support:
+                    self.conflict_rescue_support_gate_blocked += 1
+                    continue
             pair_feature = self.conflict_pair_feature(feature, winner, candidate)
             if pair_feature is None:
                 continue
@@ -3544,6 +6375,40 @@ class AnswerSlotReadoutMemory:
         self.direct_gate_applied += 1
         return direct_delta
 
+    @staticmethod
+    def target_vs_best_wrong_score(scores: np.ndarray, target: int) -> float:
+        arr = np.asarray(scores, dtype=np.float32)
+        target = int(target)
+        if target < 0 or target >= arr.size:
+            return float("nan")
+        adjusted = arr.copy()
+        adjusted[target] = -np.inf
+        return float(arr[target] - np.max(adjusted))
+
+    def counterfactual_answer_slot_scores(
+        self,
+        context: Sequence[int] | np.ndarray,
+        slot: int,
+        feature: np.ndarray,
+        base_scores: np.ndarray,
+    ) -> np.ndarray:
+        slot_idx = self.slot_index(slot)
+        scores = np.asarray(base_scores, dtype=np.float32).copy()
+        slot_delta = self.slot_scores_from_feature(feature, slot_idx)
+        scores = scores + slot_delta
+        coupling_feature = self.coupling_feature(context, feature, slot_idx)
+        if coupling_feature is not None:
+            scores = scores + self.coupling_scores_from_feature(coupling_feature, slot_idx)
+            protect_scores = None
+            if self.wrong_cleanup_protect_mode == "positive_delta":
+                protect_scores = np.maximum(slot_delta, 0.0)
+            scores = scores + self.wrong_cleanup_scores_from_feature(
+                coupling_feature,
+                slot_idx,
+                protect_scores,
+            )
+        return scores.astype(np.float32)
+
     def composed_answer_slot_scores(
         self,
         context: Sequence[int] | np.ndarray,
@@ -3575,9 +6440,10 @@ class AnswerSlotReadoutMemory:
         after_cleanup_scores = scores
         conflict_rescue_delta = np.zeros(self.vocab_size, dtype=np.float32)
         conflict_prefix_allowed = self.conflict_rescue_prefix_gate_allows(slot)
-        if coupling_feature is not None and conflict_prefix_allowed:
+        conflict_feature = self.conflict_feature(context, feature, slot)
+        if conflict_feature is not None and conflict_prefix_allowed:
             conflict_rescue_delta = self.conflict_rescue_scores_from_feature(
-                coupling_feature,
+                conflict_feature,
                 slot,
                 scores,
                 positive_support,
@@ -3590,7 +6456,32 @@ class AnswerSlotReadoutMemory:
             direct_delta_raw = self.base.answer_slot_score_delta(context, int(slot), self.feature_mode)
             direct_delta = self.gated_direct_delta(scores, direct_delta_raw)
             scores = scores + direct_delta
+        after_direct_scores = scores
+        candidate_support = (
+            positive_support
+            + np.maximum(conflict_rescue_delta, 0.0)
+            + np.maximum(direct_delta, 0.0)
+        ).astype(np.float32)
+        candidate_arbiter_delta = np.zeros(self.vocab_size, dtype=np.float32)
+        candidate_feature = self.candidate_arbiter_feature(context, feature, slot)
+        candidate_arbiter_delta = self.candidate_arbiter_scores_from_feature(
+            candidate_feature,
+            slot,
+            scores,
+            candidate_support,
+        )
+        scores = scores + candidate_arbiter_delta
         final_scores = scores.astype(np.float32)
+        runner_counterfactual_scores = None
+        if hasattr(self.base, "edge_path_last_candidate_answer_feature"):
+            runner_feature = self.base.edge_path_last_candidate_answer_feature(int(slot), "runner")
+            if runner_feature is not None and runner_feature.shape == feature.shape:
+                runner_counterfactual_scores = self.counterfactual_answer_slot_scores(
+                    context,
+                    int(slot),
+                    runner_feature,
+                    base_scores,
+                )
         self._last_answer_slot_components = {
             "slot": int(slot),
             "feature_mode": self.feature_mode,
@@ -3605,12 +6496,24 @@ class AnswerSlotReadoutMemory:
             "after_conflict_scores": after_conflict_scores.astype(np.float32),
             "direct_delta_raw": direct_delta_raw.astype(np.float32),
             "direct_delta": direct_delta.astype(np.float32),
+            "after_direct_scores": after_direct_scores.astype(np.float32),
+            "candidate_support": candidate_support.astype(np.float32),
+            "candidate_arbiter_delta": candidate_arbiter_delta.astype(np.float32),
             "final_scores": final_scores,
+            "runner_counterfactual_scores": (
+                runner_counterfactual_scores.astype(np.float32)
+                if runner_counterfactual_scores is not None
+                else np.zeros(0, dtype=np.float32)
+            ),
             "conflict_rescue_prefix_gate_allowed": int(conflict_prefix_allowed),
             "conflict_rescue_prefix_gate_reason": self._last_conflict_rescue_gate_reason,
             "conflict_rescue_prefix_gate_prev_margin": self._last_conflict_rescue_gate_prev_margin,
             "conflict_rescue_prefix_gate_prev_agree": int(self._last_conflict_rescue_gate_prev_agree),
         }
+        if hasattr(self.base, "edge_path_last_candidate_metrics"):
+            self._last_answer_slot_components.update(
+                self.base.edge_path_last_candidate_metrics(int(slot))
+            )
         self._last_scored_answer_slot = int(slot)
         self._last_scored_answer_pred = int(np.argmax(final_scores)) if final_scores.size else -1
         self._last_scored_answer_margin = self.score_margin(final_scores)
@@ -3692,6 +6595,10 @@ class AnswerSlotReadoutMemory:
             ("conflict_rescue_delta", "conflict_rescue_delta"),
             ("after_conflict_scores", "after_conflict"),
             ("direct_delta", "direct_delta"),
+            ("after_direct_scores", "after_direct"),
+            ("candidate_support", "candidate_support"),
+            ("candidate_arbiter_delta", "candidate_arbiter_delta"),
+            ("runner_counterfactual_scores", "runner_counterfactual"),
             ("final_scores", "final"),
         ]:
             if key in comp:
@@ -3702,6 +6609,7 @@ class AnswerSlotReadoutMemory:
             ("after_coupling_scores", "after_coupling"),
             ("after_cleanup_scores", "after_cleanup"),
             ("after_conflict_scores", "after_conflict"),
+            ("after_direct_scores", "after_direct"),
             ("final_scores", "final"),
         ]:
             if key in comp:
@@ -3722,6 +6630,9 @@ class AnswerSlotReadoutMemory:
             row["after_conflict_target_prob_gain_vs_base"] = float(
                 row.get("after_conflict_target_prob", 0.0)
             ) - float(row["base_target_prob"])
+            row["after_direct_target_prob_gain_vs_base"] = float(
+                row.get("after_direct_target_prob", 0.0)
+            ) - float(row["base_target_prob"])
         for key in [
             "conflict_rescue_prefix_gate_allowed",
             "conflict_rescue_prefix_gate_reason",
@@ -3730,6 +6641,9 @@ class AnswerSlotReadoutMemory:
         ]:
             if key in comp:
                 row[key] = comp[key]
+        for key, value in comp.items():
+            if key.startswith("edge_path_"):
+                row[key] = value
         return row
 
     def scores(self, context: Sequence[int] | np.ndarray) -> np.ndarray:
@@ -3790,6 +6704,14 @@ class AnswerSlotReadoutMemory:
         wrong = int(np.argmax(adjusted))
         should_apply_credit = float(adjusted[wrong]) + self.margin > target_score
         if hasattr(self.base, "update_answer_slot_feature"):
+            runner_counterfactual_margin_gain = None
+            if self._last_answer_slot_components is not None:
+                runner_scores = self._last_answer_slot_components.get("runner_counterfactual_scores")
+                if runner_scores is not None and np.asarray(runner_scores).size:
+                    current_margin = self.target_vs_best_wrong_score(scores, target)
+                    runner_margin = self.target_vs_best_wrong_score(runner_scores, target)
+                    if math.isfinite(current_margin) and math.isfinite(runner_margin):
+                        runner_counterfactual_margin_gain = float(runner_margin - current_margin)
             self.base.update_answer_slot_feature(
                 context,
                 target,
@@ -3797,6 +6719,7 @@ class AnswerSlotReadoutMemory:
                 slot_idx,
                 should_apply_credit,
                 self.feature_mode,
+                runner_counterfactual_margin_gain,
             )
         if self.update_base:
             self.base.update(context, target)
@@ -3814,8 +6737,14 @@ class AnswerSlotReadoutMemory:
             self.update_wrong_cleanup_target(slot_idx, target, coupling_feature)
             if should_apply_credit:
                 self.update_wrong_cleanup_wrong(slot_idx, wrong, coupling_feature)
-                if self._last_conflict_rescue_gate_allowed:
-                    self.update_conflict_rescue_target(slot_idx, wrong, target, coupling_feature)
+        conflict_feature = self.conflict_feature(context, feature, slot_idx)
+        if should_apply_credit and conflict_feature is not None and self._last_conflict_rescue_gate_allowed:
+            self.update_conflict_rescue_target(slot_idx, wrong, target, conflict_feature)
+        candidate_feature = self.candidate_arbiter_feature(context, feature, slot_idx)
+        candidate_support = None
+        if self._last_answer_slot_components is not None:
+            candidate_support = self._last_answer_slot_components.get("candidate_support")
+        self.update_candidate_arbiter(slot_idx, target, candidate_feature, scores, candidate_support)
         self.record_answer_slot_observation(target)
 
     def update_answer_slot_predicted_prefix(
@@ -3837,6 +6766,11 @@ class AnswerSlotReadoutMemory:
         feature = self.slot_feature(context, slot_idx)
         scores = self.composed_answer_slot_scores(context, slot_idx, feature)
         target_score = float(scores[target])
+        if self.predicted_prefix_target_top_k > 0:
+            target_rank = 1 + int(np.count_nonzero(scores > target_score))
+            if target_rank > self.predicted_prefix_target_top_k:
+                self.predicted_prefix_target_rank_skips += 1
+                return
         adjusted = scores.astype(np.float32, copy=True)
         adjusted[target] = -np.inf
         wrong = int(np.argmax(adjusted))
@@ -3845,15 +6779,29 @@ class AnswerSlotReadoutMemory:
         if coupling_feature is None:
             return
         self.predicted_prefix_updates += 1
-        if credit_mode in {"coupling", "coupling_conflict"} and self.coupling_score_scale > 0.0:
-            self.update_coupling_target(slot_idx, target, coupling_feature)
-            self.coupling_updates[slot_idx] += 1
-            self.predicted_prefix_coupling_updates += 1
-            if should_apply_credit:
-                self.update_coupling_wrong(slot_idx, wrong, coupling_feature)
-        if credit_mode in {"conflict", "coupling_conflict"} and should_apply_credit:
-            self.update_conflict_rescue_target(slot_idx, wrong, target, coupling_feature)
-            self.predicted_prefix_conflict_updates += 1
+        old_coupling_lr = self.coupling_lr
+        old_coupling_wrong_lr = self.coupling_wrong_lr
+        old_conflict_rescue_lr = self.conflict_rescue_lr
+        scale = self.predicted_prefix_lr_scale
+        if scale != 1.0:
+            self.coupling_lr *= scale
+            self.coupling_wrong_lr *= scale
+            self.conflict_rescue_lr *= scale
+        try:
+            if credit_mode in {"coupling", "coupling_conflict"} and self.coupling_score_scale > 0.0:
+                self.update_coupling_target(slot_idx, target, coupling_feature)
+                self.coupling_updates[slot_idx] += 1
+                self.predicted_prefix_coupling_updates += 1
+                if should_apply_credit and self.predicted_prefix_coupling_wrong_credit:
+                    self.update_coupling_wrong(slot_idx, wrong, coupling_feature)
+                    self.predicted_prefix_coupling_wrong_updates += 1
+            if credit_mode in {"conflict", "coupling_conflict"} and should_apply_credit:
+                self.update_conflict_rescue_target(slot_idx, wrong, target, coupling_feature)
+                self.predicted_prefix_conflict_updates += 1
+        finally:
+            self.coupling_lr = old_coupling_lr
+            self.coupling_wrong_lr = old_coupling_wrong_lr
+            self.conflict_rescue_lr = old_conflict_rescue_lr
 
     def state_bytes(self) -> int:
         total = safe_state_bytes(self.base)
@@ -3873,10 +6821,14 @@ class AnswerSlotReadoutMemory:
             total += int(self.conflict_rescue_prototypes.nbytes)
         if self.conflict_rescue_counts is not None:
             total += int(self.conflict_rescue_counts.nbytes)
+        if self.candidate_arbiter_encoder is not None:
+            total += int(self.candidate_arbiter_encoder.nbytes)
+        if self.candidate_arbiter_projection is not None:
+            total += int(self.candidate_arbiter_projection.nbytes)
         total += int(self.slot_updates.nbytes + self.slot_wrong_updates.nbytes)
         total += int(self.coupling_updates.nbytes + self.coupling_wrong_updates.nbytes)
         total += int(self.wrong_cleanup_updates.nbytes + self.wrong_cleanup_disinhibit_updates.nbytes)
-        total += int(self.conflict_rescue_updates.nbytes)
+        total += int(self.conflict_rescue_updates.nbytes + self.candidate_arbiter_updates.nbytes)
         return total
 
     def active_contexts(self) -> int:
@@ -3893,7 +6845,12 @@ class AnswerSlotReadoutMemory:
             if self.conflict_rescue_counts is not None
             else 0
         )
-        return int(base_active + slot_active + coupling_active + cleanup_active + conflict_active)
+        candidate_active = (
+            int(np.count_nonzero(np.abs(self.candidate_arbiter_projection) > 1e-8))
+            if self.candidate_arbiter_projection is not None
+            else 0
+        )
+        return int(base_active + slot_active + coupling_active + cleanup_active + conflict_active + candidate_active)
 
     def answer_slot_stats(self) -> dict[str, Any]:
         return {
@@ -3948,6 +6905,7 @@ class AnswerSlotReadoutMemory:
             "answer_slot_conflict_rescue_score_scale": self.conflict_rescue_score_scale,
             "answer_slot_conflict_rescue_top_k": self.conflict_rescue_top_k,
             "answer_slot_conflict_rescue_min_slot": self.conflict_rescue_min_slot,
+            "answer_slot_conflict_rescue_min_support": self.conflict_rescue_min_support,
             "answer_slot_conflict_rescue_prefix_gate": self.conflict_rescue_prefix_gate,
             "answer_slot_conflict_rescue_prefix_margin": self.conflict_rescue_prefix_margin,
             "answer_slot_conflict_rescue_feature_dim": self.conflict_rescue_feature_dim,
@@ -3959,18 +6917,58 @@ class AnswerSlotReadoutMemory:
             "answer_slot_conflict_rescue_updates": [int(x) for x in self.conflict_rescue_updates],
             "answer_slot_conflict_rescue_score_checks": self.conflict_rescue_score_checks,
             "answer_slot_conflict_rescue_score_applied": self.conflict_rescue_score_applied,
+            "answer_slot_conflict_rescue_support_gate_checks": (
+                self.conflict_rescue_support_gate_checks
+            ),
+            "answer_slot_conflict_rescue_support_gate_blocked": (
+                self.conflict_rescue_support_gate_blocked
+            ),
             "answer_slot_conflict_rescue_prefix_gate_checks": self.conflict_rescue_prefix_gate_checks,
             "answer_slot_conflict_rescue_prefix_gate_applied": self.conflict_rescue_prefix_gate_applied,
             "answer_slot_conflict_rescue_prefix_gate_blocked": self.conflict_rescue_prefix_gate_blocked,
             "answer_slot_predicted_prefix_credit": self.predicted_prefix_credit,
             "answer_slot_predicted_prefix_skip_teacher_match": self.predicted_prefix_skip_teacher_match,
+            "answer_slot_predicted_prefix_target_top_k": self.predicted_prefix_target_top_k,
+            "answer_slot_predicted_prefix_lr_scale": self.predicted_prefix_lr_scale,
+            "answer_slot_predicted_prefix_coupling_wrong_credit": (
+                self.predicted_prefix_coupling_wrong_credit
+            ),
             "answer_slot_predicted_prefix_checks": self.predicted_prefix_checks,
             "answer_slot_predicted_prefix_updates": self.predicted_prefix_updates,
             "answer_slot_predicted_prefix_skipped_teacher_match": (
                 self.predicted_prefix_skipped_teacher_match
             ),
+            "answer_slot_predicted_prefix_target_rank_skips": (
+                self.predicted_prefix_target_rank_skips
+            ),
             "answer_slot_predicted_prefix_coupling_updates": self.predicted_prefix_coupling_updates,
+            "answer_slot_predicted_prefix_coupling_wrong_updates": (
+                self.predicted_prefix_coupling_wrong_updates
+            ),
             "answer_slot_predicted_prefix_conflict_updates": self.predicted_prefix_conflict_updates,
+            "answer_candidate_arbiter_rank": self.candidate_arbiter_rank,
+            "answer_candidate_arbiter_lr": self.candidate_arbiter_lr,
+            "answer_candidate_arbiter_score_scale": self.candidate_arbiter_score_scale,
+            "answer_candidate_arbiter_top_k": self.candidate_arbiter_top_k,
+            "answer_candidate_arbiter_min_support": self.candidate_arbiter_min_support,
+            "answer_candidate_arbiter_min_slot": self.candidate_arbiter_min_slot,
+            "answer_candidate_arbiter_projection_decay": self.candidate_arbiter_projection_decay,
+            "answer_candidate_arbiter_clip": self.candidate_arbiter_clip,
+            "answer_candidate_arbiter_feature_dim": self.candidate_arbiter_feature_dim,
+            "answer_candidate_arbiter_code_dim": self.candidate_arbiter_code_dim,
+            "answer_candidate_arbiter_score_checks": self.candidate_arbiter_score_checks,
+            "answer_candidate_arbiter_support_gate_checks": (
+                self.candidate_arbiter_support_gate_checks
+            ),
+            "answer_candidate_arbiter_support_gate_blocked": (
+                self.candidate_arbiter_support_gate_blocked
+            ),
+            "answer_candidate_arbiter_updates": [int(x) for x in self.candidate_arbiter_updates],
+            "answer_candidate_arbiter_active_weights": (
+                int(np.count_nonzero(np.abs(self.candidate_arbiter_projection) > 1e-8))
+                if self.candidate_arbiter_projection is not None
+                else 0
+            ),
             "answer_slot_feature_dim": self.feature_dim,
             "answer_slot_active_slots": int(np.count_nonzero(self.counts)) if self.counts is not None else 0,
             "answer_slot_updates": [int(x) for x in self.slot_updates],
@@ -4228,11 +7226,13 @@ def build_memory(args: argparse.Namespace, vocab_size: int) -> tuple[str, Any, d
             args.role_branch_arbiter_wrong_lr,
             args.role_branch_arbiter_score_scale,
             args.role_branch_arbiter_margin,
+            args.role_branch_arbiter_min_count,
             args.role_branch_arbiter_base_margin,
             args.role_branch_arbiter_threshold_lr,
             args.role_branch_arbiter_rescue_role_threshold,
             args.role_branch_arbiter_rescue_joint_threshold,
             args.role_branch_arbiter_joint_variants,
+            args.role_branch_arbiter_rich_conflict_features,
             args.role_event_cache_size,
             args.edge_path_cleanup_answer_slots,
             args.edge_path_cleanup_slots,
@@ -4241,15 +7241,70 @@ def build_memory(args: argparse.Namespace, vocab_size: int) -> tuple[str, Any, d
             args.edge_path_cleanup_score_scale,
             args.edge_path_cleanup_top_k,
             args.edge_path_cleanup_inhibit,
+            args.edge_path_cleanup_credit_mode,
+            args.edge_path_margin_gate,
+            args.edge_path_margin_min_scale,
+            args.edge_path_margin_alt_scale,
+            args.edge_path_margin_learned_dominance,
+            args.edge_path_margin_escape_scale,
+            args.edge_path_transient_inhibit_scale,
+            args.edge_path_transient_inhibit_lr,
+            args.edge_path_transient_inhibit_decay,
+            args.edge_path_transient_inhibit_key,
+            args.edge_path_transient_inhibit_hash_size,
+            args.edge_path_transient_boost_scale,
+            args.edge_path_transient_boost_lr,
+            args.edge_path_transient_boost_support_margin,
+            args.edge_path_transient_boost_consistency_margin,
+            args.edge_path_transient_boost_runner_learned_max,
+            args.edge_path_transient_boost_counterfactual_min_gain,
+            args.edge_path_homeostasis_scale,
+            args.edge_path_homeostasis_lr,
+            args.edge_path_homeostasis_decay,
+            args.edge_path_homeostasis_min_slot,
+            args.edge_path_homeostasis_learned_dominance,
+            args.edge_path_homeostasis_structure_margin,
+            args.edge_path_homeostasis_soft_mod_scale,
+            args.edge_path_homeostasis_soft_mod_floor,
+            args.edge_path_homeostasis_trace_threshold,
+            args.edge_path_homeostasis_trace_gain,
+            args.edge_path_runner_arbiter_slots,
+            args.edge_path_runner_arbiter_lr,
+            args.edge_path_runner_arbiter_wrong_lr,
+            args.edge_path_runner_arbiter_score_scale,
+            args.edge_path_runner_arbiter_margin,
+            args.edge_path_runner_arbiter_min_count,
+            args.edge_path_runner_arbiter_negative_mode,
+            args.edge_path_runner_arbiter_feature_mode,
+            args.edge_path_runner_arbiter_gap_scale,
+            args.edge_path_runner_arbiter_credit_mode,
             args.edge_path_soft_top_k,
             args.edge_path_soft_temperature,
             args.edge_path_soft_consistency_scale,
             args.edge_path_soft_learned_scale,
+            args.edge_path_closure_score_scale,
+            args.edge_path_closure_proto_slots,
+            args.edge_path_closure_proto_lr,
+            args.edge_path_closure_proto_wrong_lr,
+            args.edge_path_closure_proto_score_scale,
+            args.edge_path_closure_proto_min_count,
+            args.edge_path_affinity_slots,
+            args.edge_path_affinity_lr,
+            args.edge_path_affinity_wrong_lr,
+            args.edge_path_affinity_score_scale,
+            args.edge_path_affinity_min_count,
+            args.edge_path_affinity_margin_gate,
+            args.edge_path_affinity_learned_dominance,
+            args.edge_path_affinity_consistency_protect,
             args.edge_path_direct_answer_slots,
             args.edge_path_direct_slots,
             args.edge_path_direct_lr,
             args.edge_path_direct_wrong_lr,
             args.edge_path_direct_score_scale,
+            args.edge_path_direct_mode,
+            args.edge_path_structured_side_weight,
+            args.edge_path_structured_path_weight,
+            args.edge_path_structured_other_weight,
             args.seed,
         )
     else:
@@ -4322,10 +7377,23 @@ def build_memory(args: argparse.Namespace, vocab_size: int) -> tuple[str, Any, d
             args.answer_slot_conflict_rescue_score_scale,
             args.answer_slot_conflict_rescue_top_k,
             args.answer_slot_conflict_rescue_min_slot,
+            args.answer_slot_conflict_rescue_min_support,
             args.answer_slot_conflict_rescue_prefix_gate,
             args.answer_slot_conflict_rescue_prefix_margin,
             args.answer_slot_predicted_prefix_credit,
             args.answer_slot_predicted_prefix_skip_teacher_match,
+            args.answer_slot_predicted_prefix_target_top_k,
+            args.answer_slot_predicted_prefix_lr_scale,
+            args.answer_slot_predicted_prefix_coupling_wrong_credit,
+            args.answer_candidate_arbiter_rank,
+            args.answer_candidate_arbiter_lr,
+            args.answer_candidate_arbiter_score_scale,
+            args.answer_candidate_arbiter_top_k,
+            args.answer_candidate_arbiter_min_support,
+            args.answer_candidate_arbiter_min_slot,
+            args.answer_candidate_arbiter_projection_decay,
+            args.answer_candidate_arbiter_clip,
+            args.seed,
         )
         name += (
             f"_aslot{args.answer_slot_count}"
@@ -4334,6 +7402,121 @@ def build_memory(args: argparse.Namespace, vocab_size: int) -> tuple[str, Any, d
         )
         if args.answer_slot_feature_mode != "base":
             name += f"_{args.answer_slot_feature_mode}"
+        if args.edge_path_soft_learned_scale != 0.0:
+            name += f"_eplearn{args.edge_path_soft_learned_scale:g}"
+        if args.edge_path_cleanup_credit_mode != "selected_target":
+            name += f"_epcredit_{args.edge_path_cleanup_credit_mode}"
+            if args.edge_path_cleanup_credit_mode == "margin_gated_soft_eligibility":
+                name += (
+                    f"_mg{args.edge_path_margin_gate:g}"
+                    f"_ms{args.edge_path_margin_min_scale:g}"
+                    f"_ma{args.edge_path_margin_alt_scale:g}"
+                )
+            if args.edge_path_cleanup_credit_mode == "learned_margin_escape":
+                name += (
+                    f"_mg{args.edge_path_margin_gate:g}"
+                    f"_ms{args.edge_path_margin_min_scale:g}"
+                    f"_dom{args.edge_path_margin_learned_dominance:g}"
+                    f"_esc{args.edge_path_margin_escape_scale:g}"
+                )
+            if args.edge_path_cleanup_credit_mode == "transient_inhibit_escape":
+                name += (
+                    f"_mg{args.edge_path_margin_gate:g}"
+                    f"_ms{args.edge_path_margin_min_scale:g}"
+                    f"_dom{args.edge_path_margin_learned_dominance:g}"
+                    f"_tis{args.edge_path_transient_inhibit_scale:g}"
+                    f"_tilr{args.edge_path_transient_inhibit_lr:g}"
+                    f"_tid{args.edge_path_transient_inhibit_decay:g}"
+                )
+                if args.edge_path_transient_inhibit_key != "mid":
+                    name += (
+                        f"_tik{args.edge_path_transient_inhibit_key}"
+                        f"{args.edge_path_transient_inhibit_hash_size}"
+                    )
+                if args.edge_path_transient_boost_scale > 0.0 or args.edge_path_transient_boost_lr > 0.0:
+                    name += (
+                        f"_tbs{args.edge_path_transient_boost_scale:g}"
+                        f"_tblr{args.edge_path_transient_boost_lr:g}"
+                        f"_tbm{args.edge_path_transient_boost_support_margin:g}"
+                    )
+                    if args.edge_path_transient_boost_consistency_margin >= 0.0:
+                        name += f"_tbcm{args.edge_path_transient_boost_consistency_margin:g}"
+                    if args.edge_path_transient_boost_runner_learned_max >= 0.0:
+                        name += f"_tblmax{args.edge_path_transient_boost_runner_learned_max:g}"
+                    if args.edge_path_transient_boost_counterfactual_min_gain > -1.0:
+                        name += f"_tbcfg{args.edge_path_transient_boost_counterfactual_min_gain:g}"
+                if args.edge_path_homeostasis_scale > 0.0 or args.edge_path_homeostasis_lr > 0.0:
+                    name += (
+                        f"_ephomeo{args.edge_path_homeostasis_scale:g}"
+                        f"_ephlr{args.edge_path_homeostasis_lr:g}"
+                        f"_ephd{args.edge_path_homeostasis_decay:g}"
+                        f"_ephmin{args.edge_path_homeostasis_min_slot}"
+                    )
+                    if args.edge_path_homeostasis_learned_dominance > 0.0:
+                        name += (
+                            f"_ephdom{args.edge_path_homeostasis_learned_dominance:g}"
+                            f"_ephsm{args.edge_path_homeostasis_structure_margin:g}"
+                        )
+                    if args.edge_path_homeostasis_soft_mod_scale > 0.0:
+                        name += (
+                            f"_ephsoft{args.edge_path_homeostasis_soft_mod_scale:g}"
+                            f"_ephfloor{args.edge_path_homeostasis_soft_mod_floor:g}"
+                        )
+                    if (
+                        args.edge_path_homeostasis_trace_threshold > 0.0
+                        or abs(args.edge_path_homeostasis_trace_gain - 1.0) > 1e-12
+                    ):
+                        name += (
+                            f"_ephthr{args.edge_path_homeostasis_trace_threshold:g}"
+                            f"_ephgain{args.edge_path_homeostasis_trace_gain:g}"
+                        )
+                if args.edge_path_runner_arbiter_score_scale > 0.0:
+                    name += (
+                        f"_rab{args.edge_path_runner_arbiter_score_scale:g}"
+                        f"_rablr{args.edge_path_runner_arbiter_lr:g}"
+                        f"_rabw{args.edge_path_runner_arbiter_wrong_lr:g}"
+                        f"_rabm{args.edge_path_runner_arbiter_margin:g}"
+                    )
+                    if args.edge_path_runner_arbiter_min_count > 0.0:
+                        name += f"_rabmc{args.edge_path_runner_arbiter_min_count:g}"
+                    if args.edge_path_runner_arbiter_negative_mode != "subtract":
+                        name += f"_rabneg{args.edge_path_runner_arbiter_negative_mode}"
+                    if args.edge_path_runner_arbiter_feature_mode != "pair":
+                        name += (
+                            f"_rabf{args.edge_path_runner_arbiter_feature_mode}"
+                            f"_rabg{args.edge_path_runner_arbiter_gap_scale:g}"
+                        )
+                    if args.edge_path_runner_arbiter_credit_mode != "answer_error":
+                        name += f"_rabc{args.edge_path_runner_arbiter_credit_mode}"
+                if args.edge_path_closure_score_scale > 0.0:
+                    name += f"_epclose{args.edge_path_closure_score_scale:g}"
+                if args.edge_path_closure_proto_score_scale > 0.0:
+                    name += (
+                        f"_epcproto{args.edge_path_closure_proto_score_scale:g}"
+                        f"_epcplr{args.edge_path_closure_proto_lr:g}"
+                        f"_epcpw{args.edge_path_closure_proto_wrong_lr:g}"
+                        f"_epcpmc{args.edge_path_closure_proto_min_count:g}"
+                    )
+                if args.edge_path_affinity_score_scale > 0.0:
+                    name += (
+                        f"_epaff{args.edge_path_affinity_score_scale:g}"
+                        f"_epaffs{args.edge_path_affinity_slots}"
+                        f"_epafflr{args.edge_path_affinity_lr:g}"
+                        f"_epaffw{args.edge_path_affinity_wrong_lr:g}"
+                        f"_epaffmc{args.edge_path_affinity_min_count:g}"
+                    )
+                    if (
+                        args.edge_path_affinity_margin_gate > 0.0
+                        or args.edge_path_affinity_learned_dominance > 0.0
+                        or args.edge_path_affinity_consistency_protect > 0.0
+                    ):
+                        name += (
+                            f"_epaffmg{args.edge_path_affinity_margin_gate:g}"
+                            f"_epaffdom{args.edge_path_affinity_learned_dominance:g}"
+                            f"_epaffcp{args.edge_path_affinity_consistency_protect:g}"
+                        )
+        if args.edge_path_direct_mode != "soft_feature":
+            name += f"_edirect_{args.edge_path_direct_mode}"
         if args.answer_slot_direct_pre_margin_protect > 0.0:
             name += f"_dprot{args.answer_slot_direct_pre_margin_protect:g}"
         if args.answer_slot_direct_margin_min > 0.0:
@@ -4364,10 +7547,31 @@ def build_memory(args: argparse.Namespace, vocab_size: int) -> tuple[str, Any, d
                     f"_pg{args.answer_slot_conflict_rescue_prefix_gate}"
                     f"{args.answer_slot_conflict_rescue_prefix_margin:g}"
                 )
+            if args.answer_slot_conflict_rescue_min_support > 0.0:
+                name += f"_csup{args.answer_slot_conflict_rescue_min_support:g}"
         if args.answer_slot_predicted_prefix_credit != "none":
             name += f"_pp{args.answer_slot_predicted_prefix_credit}"
             if not args.answer_slot_predicted_prefix_skip_teacher_match:
                 name += "_all"
+            if args.answer_slot_predicted_prefix_target_top_k > 0:
+                name += f"_ptop{args.answer_slot_predicted_prefix_target_top_k}"
+            if args.answer_slot_predicted_prefix_lr_scale != 1.0:
+                name += f"_plr{args.answer_slot_predicted_prefix_lr_scale:g}"
+            if not args.answer_slot_predicted_prefix_coupling_wrong_credit:
+                name += "_ptargetonly"
+        if args.answer_candidate_arbiter_score_scale > 0.0:
+            name += (
+                f"_carb{args.answer_candidate_arbiter_rank}"
+                f"_k{args.answer_candidate_arbiter_top_k}"
+                f"_x{args.answer_candidate_arbiter_score_scale:g}"
+                f"_lr{args.answer_candidate_arbiter_lr:g}"
+            )
+            if args.answer_candidate_arbiter_min_support > 0.0:
+                name += f"_sup{args.answer_candidate_arbiter_min_support:g}"
+            if args.answer_candidate_arbiter_min_slot > 0:
+                name += f"_ms{args.answer_candidate_arbiter_min_slot}"
+            if args.answer_candidate_arbiter_projection_decay < 1.0:
+                name += f"_decay{args.answer_candidate_arbiter_projection_decay:g}"
         if not args.answer_slot_update_base:
             name += "_slotonly"
     if method == "state_microproto_online" and args.binding_hops > 0:
@@ -4427,6 +7631,10 @@ def build_memory(args: argparse.Namespace, vocab_size: int) -> tuple[str, Any, d
             )
             if args.role_branch_arbiter_joint_variants:
                 name += "_jpaths"
+            if args.role_branch_arbiter_rich_conflict_features:
+                name += "_rich"
+            if args.role_branch_arbiter_min_count > 0.0:
+                name += f"_mc{args.role_branch_arbiter_min_count:g}"
             if args.role_branch_arbiter == "base_margin_rescue":
                 name += (
                     f"_rr{args.role_branch_arbiter_rescue_role_threshold:g}"
@@ -4552,11 +7760,15 @@ def build_memory(args: argparse.Namespace, vocab_size: int) -> tuple[str, Any, d
             "role_branch_arbiter_wrong_lr": args.role_branch_arbiter_wrong_lr,
             "role_branch_arbiter_score_scale": args.role_branch_arbiter_score_scale,
             "role_branch_arbiter_margin": args.role_branch_arbiter_margin,
+            "role_branch_arbiter_min_count": args.role_branch_arbiter_min_count,
             "role_branch_arbiter_base_margin": args.role_branch_arbiter_base_margin,
             "role_branch_arbiter_threshold_lr": args.role_branch_arbiter_threshold_lr,
             "role_branch_arbiter_rescue_role_threshold": args.role_branch_arbiter_rescue_role_threshold,
             "role_branch_arbiter_rescue_joint_threshold": args.role_branch_arbiter_rescue_joint_threshold,
             "role_branch_arbiter_joint_variants": args.role_branch_arbiter_joint_variants,
+            "role_branch_arbiter_rich_conflict_features": (
+                args.role_branch_arbiter_rich_conflict_features
+            ),
             "role_event_cache_size": args.role_event_cache_size,
             "edge_path_cleanup_answer_slots": args.edge_path_cleanup_answer_slots,
             "edge_path_cleanup_slots": args.edge_path_cleanup_slots,
@@ -4565,15 +7777,46 @@ def build_memory(args: argparse.Namespace, vocab_size: int) -> tuple[str, Any, d
             "edge_path_cleanup_score_scale": args.edge_path_cleanup_score_scale,
             "edge_path_cleanup_top_k": args.edge_path_cleanup_top_k,
             "edge_path_cleanup_inhibit": args.edge_path_cleanup_inhibit,
+            "edge_path_cleanup_credit_mode": args.edge_path_cleanup_credit_mode,
+            "edge_path_homeostasis_scale": args.edge_path_homeostasis_scale,
+            "edge_path_homeostasis_lr": args.edge_path_homeostasis_lr,
+            "edge_path_homeostasis_decay": args.edge_path_homeostasis_decay,
+            "edge_path_homeostasis_min_slot": args.edge_path_homeostasis_min_slot,
+            "edge_path_homeostasis_learned_dominance": (
+                args.edge_path_homeostasis_learned_dominance
+            ),
+            "edge_path_homeostasis_structure_margin": args.edge_path_homeostasis_structure_margin,
+            "edge_path_homeostasis_soft_mod_scale": args.edge_path_homeostasis_soft_mod_scale,
+            "edge_path_homeostasis_soft_mod_floor": args.edge_path_homeostasis_soft_mod_floor,
+            "edge_path_homeostasis_trace_threshold": args.edge_path_homeostasis_trace_threshold,
+            "edge_path_homeostasis_trace_gain": args.edge_path_homeostasis_trace_gain,
             "edge_path_soft_top_k": args.edge_path_soft_top_k,
             "edge_path_soft_temperature": args.edge_path_soft_temperature,
             "edge_path_soft_consistency_scale": args.edge_path_soft_consistency_scale,
             "edge_path_soft_learned_scale": args.edge_path_soft_learned_scale,
+            "edge_path_closure_score_scale": args.edge_path_closure_score_scale,
+            "edge_path_closure_proto_slots": args.edge_path_closure_proto_slots,
+            "edge_path_closure_proto_lr": args.edge_path_closure_proto_lr,
+            "edge_path_closure_proto_wrong_lr": args.edge_path_closure_proto_wrong_lr,
+            "edge_path_closure_proto_score_scale": args.edge_path_closure_proto_score_scale,
+            "edge_path_closure_proto_min_count": args.edge_path_closure_proto_min_count,
+            "edge_path_affinity_slots": args.edge_path_affinity_slots,
+            "edge_path_affinity_lr": args.edge_path_affinity_lr,
+            "edge_path_affinity_wrong_lr": args.edge_path_affinity_wrong_lr,
+            "edge_path_affinity_score_scale": args.edge_path_affinity_score_scale,
+            "edge_path_affinity_min_count": args.edge_path_affinity_min_count,
+            "edge_path_affinity_margin_gate": args.edge_path_affinity_margin_gate,
+            "edge_path_affinity_learned_dominance": args.edge_path_affinity_learned_dominance,
+            "edge_path_affinity_consistency_protect": args.edge_path_affinity_consistency_protect,
             "edge_path_direct_answer_slots": args.edge_path_direct_answer_slots,
             "edge_path_direct_slots": args.edge_path_direct_slots,
             "edge_path_direct_lr": args.edge_path_direct_lr,
             "edge_path_direct_wrong_lr": args.edge_path_direct_wrong_lr,
             "edge_path_direct_score_scale": args.edge_path_direct_score_scale,
+            "edge_path_direct_mode": args.edge_path_direct_mode,
+            "edge_path_structured_side_weight": args.edge_path_structured_side_weight,
+            "edge_path_structured_path_weight": args.edge_path_structured_path_weight,
+            "edge_path_structured_other_weight": args.edge_path_structured_other_weight,
             "seed": args.seed,
         }
     if args.answer_slot_readout:
@@ -4604,12 +7847,32 @@ def build_memory(args: argparse.Namespace, vocab_size: int) -> tuple[str, Any, d
             "answer_slot_conflict_rescue_score_scale": args.answer_slot_conflict_rescue_score_scale,
             "answer_slot_conflict_rescue_top_k": args.answer_slot_conflict_rescue_top_k,
             "answer_slot_conflict_rescue_min_slot": args.answer_slot_conflict_rescue_min_slot,
+            "answer_slot_conflict_rescue_min_support": (
+                args.answer_slot_conflict_rescue_min_support
+            ),
             "answer_slot_conflict_rescue_prefix_gate": args.answer_slot_conflict_rescue_prefix_gate,
             "answer_slot_conflict_rescue_prefix_margin": args.answer_slot_conflict_rescue_prefix_margin,
             "answer_slot_predicted_prefix_credit": args.answer_slot_predicted_prefix_credit,
             "answer_slot_predicted_prefix_skip_teacher_match": (
                 args.answer_slot_predicted_prefix_skip_teacher_match
             ),
+            "answer_slot_predicted_prefix_target_top_k": (
+                args.answer_slot_predicted_prefix_target_top_k
+            ),
+            "answer_slot_predicted_prefix_lr_scale": args.answer_slot_predicted_prefix_lr_scale,
+            "answer_slot_predicted_prefix_coupling_wrong_credit": (
+                args.answer_slot_predicted_prefix_coupling_wrong_credit
+            ),
+            "answer_candidate_arbiter_rank": args.answer_candidate_arbiter_rank,
+            "answer_candidate_arbiter_lr": args.answer_candidate_arbiter_lr,
+            "answer_candidate_arbiter_score_scale": args.answer_candidate_arbiter_score_scale,
+            "answer_candidate_arbiter_top_k": args.answer_candidate_arbiter_top_k,
+            "answer_candidate_arbiter_min_support": args.answer_candidate_arbiter_min_support,
+            "answer_candidate_arbiter_min_slot": args.answer_candidate_arbiter_min_slot,
+            "answer_candidate_arbiter_projection_decay": (
+                args.answer_candidate_arbiter_projection_decay
+            ),
+            "answer_candidate_arbiter_clip": args.answer_candidate_arbiter_clip,
         }
     return name, memory, memory_cfg
 
@@ -4722,12 +7985,89 @@ def component_metrics_for_last_score(
     return row
 
 
+def score_top_k_indices(scores: np.ndarray, k: int) -> list[int]:
+    if k <= 0 or scores.size == 0:
+        return []
+    k = min(int(k), int(scores.size))
+    if k >= scores.size:
+        return [int(x) for x in np.argsort(scores)[::-1]]
+    idx = np.argpartition(scores, -k)[-k:]
+    idx = idx[np.argsort(scores[idx])[::-1]]
+    return [int(x) for x in idx]
+
+
+def restore_answer_prefix_state(
+    memory: Any,
+    prompt_ids: Sequence[int],
+    prefix_ids: Sequence[int],
+) -> list[int]:
+    reset_dynamic(memory)
+    observe_prompt(memory, prompt_ids)
+    order = int(memory.max_order)
+    history = list(int(x) for x in prompt_ids)
+    for token in prefix_ids:
+        context = np.array(history[-order:], dtype=np.int64)
+        if hasattr(memory, "observe"):
+            memory.observe(context, int(token))
+        history.append(int(token))
+    return history
+
+
+def greedy_lookahead_answer_prediction(
+    memory: Any,
+    prompt_ids: Sequence[int],
+    prefix_ids: Sequence[int],
+    slot: int,
+    answer_count: int,
+    temperature: float,
+    lookahead_candidates: int,
+    lookahead_weight: float,
+) -> tuple[np.ndarray, int, int]:
+    history = restore_answer_prefix_state(memory, prompt_ids, prefix_ids)
+    order = int(memory.max_order)
+    context = np.array(history[-order:], dtype=np.int64)
+    scores = scores_for_answer_slot(memory, context, slot)
+    probs = phase.softmax(scores, temperature)
+    pred = int(np.argmax(probs))
+    applied = 0
+    if lookahead_candidates <= 0 or slot + 1 >= answer_count:
+        return scores, pred, applied
+
+    candidates = score_top_k_indices(scores.astype(np.float32, copy=False), lookahead_candidates)
+    if not candidates:
+        return scores, pred, applied
+
+    best_pred = pred
+    best_score = -float("inf")
+    for candidate in candidates:
+        candidate = int(candidate)
+        candidate_history = restore_answer_prefix_state(
+            memory,
+            prompt_ids,
+            list(prefix_ids) + [candidate],
+        )
+        next_context = np.array(candidate_history[-order:], dtype=np.int64)
+        next_scores = scores_for_answer_slot(memory, next_context, slot + 1)
+        next_value = float(np.max(next_scores)) if next_scores.size else 0.0
+        joint_score = float(scores[candidate]) + float(lookahead_weight) * next_value
+        if joint_score > best_score:
+            best_score = joint_score
+            best_pred = candidate
+    # Restore current-slot state and components after candidate simulations.
+    history = restore_answer_prefix_state(memory, prompt_ids, prefix_ids)
+    context = np.array(history[-order:], dtype=np.int64)
+    scores = scores_for_answer_slot(memory, context, slot)
+    return scores, int(best_pred), 1
+
+
 def score_prompt_answer_sequence(
     memory: Any,
     prompt_ids: Sequence[int],
     answer_ids: Sequence[int],
     temperature: float,
     collect_components: bool = False,
+    lookahead_candidates: int = 0,
+    lookahead_weight: float = 1.0,
 ) -> dict[str, Any]:
     reset_dynamic(memory)
     observe_prompt(memory, prompt_ids)
@@ -4739,6 +8079,15 @@ def score_prompt_answer_sequence(
     target_probs: list[float] = []
     component_rows: list[dict[str, Any]] = []
     first_loss = 0.0
+    first_rank = 0
+    first_margin = 0.0
+    answer_top_hits = {k: 0 for k in RANK_DIAGNOSTIC_KS}
+    answer_error_top_hits = {k: 0 for k in RANK_DIAGNOSTIC_KS}
+    full_rank_sum = 0.0
+    full_margin_sum = 0.0
+    full_top_hits = {k: 0 for k in RANK_DIAGNOSTIC_KS}
+    full_error_top_hits = {k: 0 for k in RANK_DIAGNOSTIC_KS}
+    full_error_count = 0
     for slot, target in enumerate(answer_ids):
         context = np.array(history[-order:], dtype=np.int64)
         scores = scores_for_answer_slot(memory, context, slot)
@@ -4747,6 +8096,7 @@ def score_prompt_answer_sequence(
             int(target),
             temperature,
         )
+        rank_metrics = candidate_rank_metrics(scores, int(target), int(pred))
         if collect_components:
             component_rows.append(
                 component_metrics_for_last_score(
@@ -4763,21 +8113,46 @@ def score_prompt_answer_sequence(
         token_correct += int(pred == int(target))
         if not teacher_forced_preds:
             first_loss = loss
+            first_rank = int(rank_metrics["target_rank"])
+            first_margin = float(rank_metrics["target_margin"])
+            for k in RANK_DIAGNOSTIC_KS:
+                answer_top_hits[k] += int(rank_metrics[f"top{k}"])
+                answer_error_top_hits[k] += int(rank_metrics[f"error_top{k}"])
         teacher_forced_preds.append(pred)
         target_probs.append(target_prob)
+        full_rank_sum += float(rank_metrics["target_rank"])
+        full_margin_sum += float(rank_metrics["target_margin"])
+        full_error_count += int(rank_metrics["error"])
+        for k in RANK_DIAGNOSTIC_KS:
+            full_top_hits[k] += int(rank_metrics[f"top{k}"])
+            full_error_top_hits[k] += int(rank_metrics[f"error_top{k}"])
         if hasattr(memory, "observe"):
             memory.observe(context, int(target))
         history.append(int(target))
 
-    reset_dynamic(memory)
-    observe_prompt(memory, prompt_ids)
     history = list(int(x) for x in prompt_ids)
     greedy_preds: list[int] = []
+    greedy_lookahead_applied = 0
     for slot, target in enumerate(answer_ids):
-        context = np.array(history[-order:], dtype=np.int64)
-        scores = scores_for_answer_slot(memory, context, slot)
+        if lookahead_candidates > 0:
+            scores, pred, applied = greedy_lookahead_answer_prediction(
+                memory,
+                prompt_ids,
+                greedy_preds,
+                slot,
+                len(answer_ids),
+                temperature,
+                lookahead_candidates,
+                lookahead_weight,
+            )
+            greedy_lookahead_applied += int(applied)
+            context = np.array(history[-order:], dtype=np.int64)
+        else:
+            context = np.array(history[-order:], dtype=np.int64)
+            scores = scores_for_answer_slot(memory, context, slot)
+            probs = phase.softmax(scores, temperature)
+            pred = int(np.argmax(probs))
         probs = phase.softmax(scores, temperature)
-        pred = int(np.argmax(probs))
         greedy_preds.append(pred)
         if collect_components:
             target = int(target)
@@ -4800,21 +8175,36 @@ def score_prompt_answer_sequence(
     first_correct = int(teacher_forced_preds[0] == int(answer_ids[0])) if answer_ids else 0
     first_prob = float(target_probs[0]) if target_probs else 0.0
     first_pred = int(teacher_forced_preds[0]) if teacher_forced_preds else -1
-    return {
+    metrics: dict[str, Any] = {
         "answer_loss_sum": first_loss if answer_ids else 0.0,
         "answer_correct": first_correct,
         "answer_total": 1 if answer_ids else 0,
+        "answer_target_rank": first_rank if answer_ids else 0,
+        "answer_target_margin": first_margin if answer_ids else 0.0,
+        "answer_target_rank_sum": float(first_rank if answer_ids else 0),
+        "answer_target_margin_sum": float(first_margin if answer_ids else 0.0),
+        "answer_error_count": int((1 - first_correct) if answer_ids else 0),
         "full_answer_loss_sum": loss_sum,
         "full_answer_token_correct": token_correct,
         "full_answer_token_total": len(answer_ids),
         "full_answer_sequence_correct": int(list(greedy_preds) == [int(x) for x in answer_ids]),
         "full_answer_sequence_total": 1 if answer_ids else 0,
+        "full_answer_target_rank_sum": full_rank_sum,
+        "full_answer_target_margin_sum": full_margin_sum,
+        "full_answer_error_count": int(full_error_count),
         "first_pred": first_pred,
         "first_target_prob": first_prob,
         "teacher_forced_preds": teacher_forced_preds,
         "greedy_preds": greedy_preds,
+        "greedy_lookahead_applied": int(greedy_lookahead_applied),
         "component_rows": component_rows,
     }
+    for k in RANK_DIAGNOSTIC_KS:
+        metrics[f"answer_top{k}_hit"] = int(answer_top_hits[k])
+        metrics[f"answer_error_top{k}_hit"] = int(answer_error_top_hits[k])
+        metrics[f"full_answer_top{k}_hit"] = int(full_top_hits[k])
+        metrics[f"full_answer_error_top{k}_hit"] = int(full_error_top_hits[k])
+    return metrics
 
 
 def train_answer_token(
@@ -5111,6 +8501,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--answer-slot-conflict-rescue-top-k", type=int, default=4)
     parser.add_argument("--answer-slot-conflict-rescue-min-slot", type=int, default=1)
     parser.add_argument(
+        "--answer-slot-conflict-rescue-min-support",
+        type=float,
+        default=0.0,
+        help="Require this much positive slot/coupling support before applying conflict rescue; 0 disables.",
+    )
+    parser.add_argument(
         "--answer-slot-conflict-rescue-prefix-gate",
         choices=["none", "observed_pred", "margin", "observed_pred_margin"],
         default="none",
@@ -5135,6 +8531,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also apply predicted-prefix credit when the predicted prefix equals the teacher-forced prefix.",
     )
     parser.set_defaults(answer_slot_predicted_prefix_skip_teacher_match=True)
+    parser.add_argument(
+        "--answer-slot-predicted-prefix-target-top-k",
+        type=int,
+        default=0,
+        help="Only apply predicted-prefix credit when the true target is within this rank; 0 disables.",
+    )
+    parser.add_argument(
+        "--answer-slot-predicted-prefix-lr-scale",
+        type=float,
+        default=1.0,
+        help="Temporary local learning-rate multiplier for predicted-prefix credit updates.",
+    )
+    parser.add_argument(
+        "--answer-slot-predicted-prefix-target-only-coupling",
+        dest="answer_slot_predicted_prefix_coupling_wrong_credit",
+        action="store_false",
+        help="For predicted-prefix coupling credit, update the target prototype but skip coupling wrong-credit.",
+    )
+    parser.set_defaults(answer_slot_predicted_prefix_coupling_wrong_credit=True)
+    parser.add_argument("--answer-candidate-arbiter-rank", type=int, default=32)
+    parser.add_argument("--answer-candidate-arbiter-lr", type=float, default=0.001)
+    parser.add_argument(
+        "--answer-candidate-arbiter-score-scale",
+        type=float,
+        default=0.0,
+        help="Add a low-rank local residual over current answer candidates; 0 disables.",
+    )
+    parser.add_argument("--answer-candidate-arbiter-top-k", type=int, default=4)
+    parser.add_argument(
+        "--answer-candidate-arbiter-min-support",
+        type=float,
+        default=0.0,
+        help="Require this much positive slot/path support before candidate-arbiter scoring or updates; 0 disables.",
+    )
+    parser.add_argument("--answer-candidate-arbiter-min-slot", type=int, default=0)
+    parser.add_argument("--answer-candidate-arbiter-projection-decay", type=float, default=1.0)
+    parser.add_argument("--answer-candidate-arbiter-clip", type=float, default=0.75)
+    parser.add_argument(
+        "--answer-lookahead-candidates",
+        type=int,
+        default=0,
+        help="During greedy multi-token answer decoding, rescore this many current-slot candidates by one-step future answer consistency; 0 disables.",
+    )
+    parser.add_argument("--answer-lookahead-weight", type=float, default=1.0)
     parser.add_argument(
         "--answer-slot-feature-mode",
         choices=[
@@ -5316,6 +8756,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--role-branch-arbiter-wrong-lr", type=float, default=0.05)
     parser.add_argument("--role-branch-arbiter-score-scale", type=float, default=4.0)
     parser.add_argument("--role-branch-arbiter-margin", type=float, default=0.0)
+    parser.add_argument(
+        "--role-branch-arbiter-min-count",
+        type=float,
+        default=0.0,
+        help="For conflict_proto, require this much repeated base evidence before choosing base_only.",
+    )
     parser.add_argument("--role-branch-arbiter-base-margin", type=float, default=0.20)
     parser.add_argument("--role-branch-arbiter-threshold-lr", type=float, default=0.10)
     parser.add_argument("--role-branch-arbiter-rescue-role-threshold", type=float, default=0.05)
@@ -5324,6 +8770,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--role-branch-arbiter-joint-variants",
         action="store_true",
         help="Let the local branch arbiter choose joint rescue paths in addition to base/role/direct paths.",
+    )
+    parser.add_argument(
+        "--role-branch-arbiter-rich-conflict-features",
+        action="store_true",
+        help="Add winner-pair and role/joint evidence features to the branch arbiter feature.",
     )
     parser.add_argument(
         "--role-event-cache-size",
@@ -5343,15 +8794,211 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--edge-path-cleanup-score-scale", type=float, default=0.75)
     parser.add_argument("--edge-path-cleanup-top-k", type=int, default=1)
     parser.add_argument("--edge-path-cleanup-inhibit", type=float, default=0.25)
+    parser.add_argument(
+        "--edge-path-cleanup-credit-mode",
+        choices=[
+            "selected_target",
+            "reward_punish",
+            "soft_eligibility",
+            "margin_gated_soft_eligibility",
+            "learned_margin_escape",
+            "transient_inhibit_escape",
+        ],
+        default="selected_target",
+        help="Local cleanup credit rule: old selected-target updates or reward/punish path competition from answer-slot success.",
+    )
+    parser.add_argument("--edge-path-margin-gate", type=float, default=0.10)
+    parser.add_argument("--edge-path-margin-min-scale", type=float, default=0.10)
+    parser.add_argument("--edge-path-margin-alt-scale", type=float, default=0.25)
+    parser.add_argument("--edge-path-margin-learned-dominance", type=float, default=1.0)
+    parser.add_argument("--edge-path-margin-escape-scale", type=float, default=0.50)
+    parser.add_argument("--edge-path-transient-inhibit-scale", type=float, default=0.0)
+    parser.add_argument("--edge-path-transient-inhibit-lr", type=float, default=0.50)
+    parser.add_argument("--edge-path-transient-inhibit-decay", type=float, default=0.90)
+    parser.add_argument(
+        "--edge-path-transient-inhibit-key",
+        choices=["mid", "path_hash", "anchor_path"],
+        default="mid",
+    )
+    parser.add_argument("--edge-path-transient-inhibit-hash-size", type=int, default=512)
+    parser.add_argument("--edge-path-transient-boost-scale", type=float, default=0.0)
+    parser.add_argument("--edge-path-transient-boost-lr", type=float, default=0.0)
+    parser.add_argument("--edge-path-transient-boost-support-margin", type=float, default=0.10)
+    parser.add_argument(
+        "--edge-path-transient-boost-consistency-margin",
+        type=float,
+        default=-1.0,
+        help="Enable local runner boost only when runner consistency plus this margin reaches selected consistency; negative disables the gate.",
+    )
+    parser.add_argument(
+        "--edge-path-transient-boost-runner-learned-max",
+        type=float,
+        default=-1.0,
+        help="Enable runner boost only for weakly self-confirmed runners with learned score at or below this value; negative disables the gate.",
+    )
+    parser.add_argument(
+        "--edge-path-transient-boost-counterfactual-min-gain",
+        type=float,
+        default=-1.0,
+        help="Enable runner boost only when local runner counterfactual target margin gain reaches this threshold; <= -1 disables the gate.",
+    )
+    parser.add_argument(
+        "--edge-path-homeostasis-scale",
+        type=float,
+        default=0.0,
+        help="Subtract a local usage trace from repeated edge-path winners; 0 disables.",
+    )
+    parser.add_argument("--edge-path-homeostasis-lr", type=float, default=0.0)
+    parser.add_argument("--edge-path-homeostasis-decay", type=float, default=0.98)
+    parser.add_argument(
+        "--edge-path-homeostasis-min-slot",
+        type=int,
+        default=0,
+        help="Only apply/update edge-path homeostasis for answer slots at or above this index.",
+    )
+    parser.add_argument(
+        "--edge-path-homeostasis-learned-dominance",
+        type=float,
+        default=0.0,
+        help="When >0, apply/update homeostasis only for learned-dominant paths with weak local structure.",
+    )
+    parser.add_argument(
+        "--edge-path-homeostasis-structure-margin",
+        type=float,
+        default=0.0,
+        help="Allowed support/closure/consistency margin before a path is considered structurally weak for homeostasis.",
+    )
+    parser.add_argument(
+        "--edge-path-homeostasis-soft-mod-scale",
+        type=float,
+        default=0.0,
+        help="When >0, replace hard homeostasis gating with a continuous local multiplier from weak-structure/learned pressure.",
+    )
+    parser.add_argument(
+        "--edge-path-homeostasis-soft-mod-floor",
+        type=float,
+        default=1.0,
+        help="Minimum multiplier for soft homeostasis modulation; 1 preserves old behavior.",
+    )
+    parser.add_argument(
+        "--edge-path-homeostasis-trace-threshold",
+        type=float,
+        default=0.0,
+        help="Only the portion of a local usage trace above this threshold contributes to homeostasis penalty.",
+    )
+    parser.add_argument(
+        "--edge-path-homeostasis-trace-gain",
+        type=float,
+        default=1.0,
+        help="Gain applied after trace-threshold compression; 1 preserves old behavior when threshold is 0.",
+    )
+    parser.add_argument("--edge-path-runner-arbiter-slots", type=int, default=8)
+    parser.add_argument("--edge-path-runner-arbiter-lr", type=float, default=0.20)
+    parser.add_argument("--edge-path-runner-arbiter-wrong-lr", type=float, default=0.03)
+    parser.add_argument("--edge-path-runner-arbiter-score-scale", type=float, default=0.0)
+    parser.add_argument("--edge-path-runner-arbiter-margin", type=float, default=0.0)
+    parser.add_argument(
+        "--edge-path-runner-arbiter-min-count",
+        type=float,
+        default=0.0,
+        help="Require the best positive pair-arbiter prototype to have this count before scoring; 0 preserves the original R240 behavior.",
+    )
+    parser.add_argument(
+        "--edge-path-runner-arbiter-negative-mode",
+        choices=["subtract", "separate"],
+        default="subtract",
+        help="Use old anti-Hebbian subtraction from positive prototypes, or a separate local negative prototype bank.",
+    )
+    parser.add_argument(
+        "--edge-path-runner-arbiter-feature-mode",
+        choices=["pair", "rich_gaps"],
+        default="pair",
+        help="Pair feature for selected-vs-runner arbiter: original path pair or path pair plus bounded score/support/learned/consistency gaps.",
+    )
+    parser.add_argument(
+        "--edge-path-runner-arbiter-gap-scale",
+        type=float,
+        default=0.50,
+        help="Scale for bounded gap channels when --edge-path-runner-arbiter-feature-mode=rich_gaps.",
+    )
+    parser.add_argument(
+        "--edge-path-runner-arbiter-credit-mode",
+        choices=["answer_error", "counterfactual_positive"],
+        default="answer_error",
+        help="Third-factor rule for no-BP selected-vs-runner pair arbiter updates.",
+    )
     parser.add_argument("--edge-path-soft-top-k", type=int, default=6)
     parser.add_argument("--edge-path-soft-temperature", type=float, default=0.20)
     parser.add_argument("--edge-path-soft-consistency-scale", type=float, default=0.50)
     parser.add_argument("--edge-path-soft-learned-scale", type=float, default=0.0)
+    parser.add_argument(
+        "--edge-path-closure-score-scale",
+        type=float,
+        default=0.0,
+        help="Add a local dendritic closure score between path_feature and source/destination agreement during edge-path ranking.",
+    )
+    parser.add_argument("--edge-path-closure-proto-slots", type=int, default=8)
+    parser.add_argument("--edge-path-closure-proto-lr", type=float, default=0.20)
+    parser.add_argument("--edge-path-closure-proto-wrong-lr", type=float, default=0.03)
+    parser.add_argument(
+        "--edge-path-closure-proto-score-scale",
+        type=float,
+        default=0.0,
+        help="Score edge-path candidates with local learned positive-minus-negative closure prototypes.",
+    )
+    parser.add_argument(
+        "--edge-path-closure-proto-min-count",
+        type=float,
+        default=0.0,
+        help="Require the best positive closure prototype to have this count before adding closure-prototype score.",
+    )
+    parser.add_argument("--edge-path-affinity-slots", type=int, default=2)
+    parser.add_argument("--edge-path-affinity-lr", type=float, default=0.20)
+    parser.add_argument("--edge-path-affinity-wrong-lr", type=float, default=0.03)
+    parser.add_argument(
+        "--edge-path-affinity-score-scale",
+        type=float,
+        default=0.0,
+        help="Score edge-path candidates with local compact support/closure affinity prototypes.",
+    )
+    parser.add_argument(
+        "--edge-path-affinity-min-count",
+        type=float,
+        default=0.0,
+        help="Require the best positive affinity prototype to have this count before scoring.",
+    )
+    parser.add_argument(
+        "--edge-path-affinity-margin-gate",
+        type=float,
+        default=0.0,
+        help="When >0, score/update affinity only for candidates within this support margin of the strongest alternative.",
+    )
+    parser.add_argument(
+        "--edge-path-affinity-learned-dominance",
+        type=float,
+        default=0.0,
+        help="When >0, also open the affinity gate for learned-dominant candidates whose closure/consistency evidence is weaker than an alternative.",
+    )
+    parser.add_argument(
+        "--edge-path-affinity-consistency-protect",
+        type=float,
+        default=0.0,
+        help="Tolerance before treating closure/consistency as structurally weaker for learned-dominance affinity gating.",
+    )
     parser.add_argument("--edge-path-direct-answer-slots", type=int, default=2)
     parser.add_argument("--edge-path-direct-slots", type=int, default=16)
     parser.add_argument("--edge-path-direct-lr", type=float, default=0.35)
     parser.add_argument("--edge-path-direct-wrong-lr", type=float, default=0.03)
     parser.add_argument("--edge-path-direct-score-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--edge-path-direct-mode",
+        choices=["soft_feature", "candidate_scores", "structured_scores"],
+        default="soft_feature",
+        help="For edge_path_soft_direct, score averaged path features, each candidate path, or structured source/path/other evidence.",
+    )
+    parser.add_argument("--edge-path-structured-side-weight", type=float, default=0.50)
+    parser.add_argument("--edge-path-structured-path-weight", type=float, default=0.35)
+    parser.add_argument("--edge-path-structured-other-weight", type=float, default=0.15)
     parser.add_argument("--kv-order", type=int, default=128)
     parser.add_argument("--kv-dim", type=int, default=64)
     parser.add_argument("--kv-trace-decay", type=float, default=0.95)
@@ -5585,6 +9232,17 @@ def main() -> None:
             full_answer_token_total = 0
             full_answer_sequence_correct = 0
             full_answer_sequence_total = 0
+            greedy_lookahead_applied_total = 0
+            answer_rank_sum = 0.0
+            answer_margin_sum = 0.0
+            answer_error_count = 0
+            answer_top_hits = {k: 0 for k in RANK_DIAGNOSTIC_KS}
+            answer_error_top_hits = {k: 0 for k in RANK_DIAGNOSTIC_KS}
+            full_answer_rank_sum = 0.0
+            full_answer_margin_sum = 0.0
+            full_answer_error_count = 0
+            full_answer_top_hits = {k: 0 for k in RANK_DIAGNOSTIC_KS}
+            full_answer_error_top_hits = {k: 0 for k in RANK_DIAGNOSTIC_KS}
             skipped = 0
             for idx, row in enumerate(rows):
                 answer_ids_raw = answer_token_ids(tokenizer, str(row["answer"]))
@@ -5604,6 +9262,8 @@ def main() -> None:
                     answer_ids,
                     args.temperature,
                     collect_components=args.prediction_component_margins and should_write_prediction,
+                    lookahead_candidates=args.answer_lookahead_candidates,
+                    lookahead_weight=args.answer_lookahead_weight,
                 )
                 pred = int(metrics["first_pred"])
                 target_prob = float(metrics["first_target_prob"])
@@ -5615,6 +9275,18 @@ def main() -> None:
                 full_answer_token_total += metrics["full_answer_token_total"]
                 full_answer_sequence_correct += metrics["full_answer_sequence_correct"]
                 full_answer_sequence_total += metrics["full_answer_sequence_total"]
+                greedy_lookahead_applied_total += int(metrics["greedy_lookahead_applied"])
+                answer_rank_sum += float(metrics["answer_target_rank_sum"])
+                answer_margin_sum += float(metrics["answer_target_margin_sum"])
+                answer_error_count += int(metrics["answer_error_count"])
+                full_answer_rank_sum += float(metrics["full_answer_target_rank_sum"])
+                full_answer_margin_sum += float(metrics["full_answer_target_margin_sum"])
+                full_answer_error_count += int(metrics["full_answer_error_count"])
+                for k in RANK_DIAGNOSTIC_KS:
+                    answer_top_hits[k] += int(metrics[f"answer_top{k}_hit"])
+                    answer_error_top_hits[k] += int(metrics[f"answer_error_top{k}_hit"])
+                    full_answer_top_hits[k] += int(metrics[f"full_answer_top{k}_hit"])
+                    full_answer_error_top_hits[k] += int(metrics[f"full_answer_error_top{k}_hit"])
                 if should_write_prediction:
                     prediction_rows.append(
                         {
@@ -5633,10 +9305,19 @@ def main() -> None:
                                 metrics["greedy_preds"],
                             ),
                             "target_prob": target_prob,
+                            "target_rank": metrics["answer_target_rank"],
+                            "target_margin": metrics["answer_target_margin"],
+                            "target_top2": metrics["answer_top2_hit"],
+                            "target_top4": metrics["answer_top4_hit"],
+                            "target_top8": metrics["answer_top8_hit"],
+                            "error_target_top2": metrics["answer_error_top2_hit"],
+                            "error_target_top4": metrics["answer_error_top4_hit"],
+                            "error_target_top8": metrics["answer_error_top8_hit"],
                             "correct": int(pred == target),
                             "full_correct": metrics["full_answer_sequence_correct"],
                             "full_answer_token_correct": metrics["full_answer_token_correct"],
                             "full_answer_token_total": metrics["full_answer_token_total"],
+                            "greedy_lookahead_applied": metrics["greedy_lookahead_applied"],
                             "prompt_compact_tokens": len(prompt_ids),
                             "raw_answer_token_count": len(answer_ids_raw),
                         }
@@ -5692,6 +9373,7 @@ def main() -> None:
                     "full_answer_token_accuracy": full_token_summary["accuracy"],
                     "full_answer_token_targets": full_answer_token_total,
                     "full_answer_sequences": full_answer_sequence_total,
+                    "greedy_lookahead_applied": greedy_lookahead_applied_total,
                     "token_accuracy": float("nan"),
                     "token_loss": float("nan"),
                     "token_ppl": float("nan"),
@@ -5701,6 +9383,24 @@ def main() -> None:
                     "vocab_size": vocab_size,
                     "stores_raw_text": False,
                     "task_format": "unified_next_token_prompt",
+                    **summarize_rank_diagnostics(
+                        "answer",
+                        answer_rank_sum,
+                        answer_margin_sum,
+                        answer_top_hits,
+                        answer_error_top_hits,
+                        answer_error_count,
+                        total,
+                    ),
+                    **summarize_rank_diagnostics(
+                        "full_answer",
+                        full_answer_rank_sum,
+                        full_answer_margin_sum,
+                        full_answer_top_hits,
+                        full_answer_error_top_hits,
+                        full_answer_error_count,
+                        full_answer_token_total,
+                    ),
                 }
             )
 
