@@ -1,6 +1,16 @@
 # Experiment Plan
 
-## ⚠️ ACTIVE GOAL RESET: 2026-06-19 — READ THIS FIRST
+## 🚨 STOP — READ BEFORE DOING ANYTHING
+
+**If you are about to call any external API (DeepSeek, OpenAI, Claude) as teacher/backbone, write any `*api*` script, add a task-specific module, or continue bAbI credit/paraphrase work → STOP. All of that is forbidden.**
+
+**The only allowed next action: R096 unified model integration on TinyStories, no API, no pretrained model.**
+
+Check if R096prep seeds 1/2 are still running before starting anything new.
+
+---
+
+## ⚠️ ACTIVE GOAL RESET: 2026-06-19
 
 ### The One Goal: A Unified No-BP Neural Model
 

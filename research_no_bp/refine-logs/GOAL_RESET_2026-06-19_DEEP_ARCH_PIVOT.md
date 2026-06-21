@@ -1,6 +1,19 @@
 # GOAL RESET 2026-06-19: One Unified Brain-Inspired Model
 
-## THE GOAL — ONE SENTENCE
+## 🚨 STOP — READ BEFORE DOING ANYTHING
+
+**If you are about to:**
+- Call any external API (DeepSeek, OpenAI, Claude, etc.) as a teacher or backbone → **STOP. This violates the core constraint.**
+- Write any script that uses a pretrained LLM, frozen model, or API endpoint in the learning loop → **STOP.**
+- Add a new task-specific module (event detector, credit channel, flip gate, QA head) → **STOP.**
+- Continue the bAbI paraphrase/credit loop (R097–R145) → **STOP. It is permanently archived.**
+- Read `online_memory_style_api_experiment.py` or any `*api*` script for implementation ideas → **STOP. Those are old archived experiments.**
+
+**The only allowed next action is R096: integrate NoProp + Hebbian KV + eligibility into one unified model, train on TinyStories next-token prediction, no API, no pretrained model.**
+
+Current best result to beat: `phase_trace_noprop_local_inhib_competitive_online_feature_calib_gain` seed0 post CE **2.201** (seeds 1/2 may still be running in background — check before starting new experiments).
+
+---
 
 Build a **single unified no-BP neural model** that pretrains on raw text from scratch, learns through local biologically-plausible plasticity rules, and handles both language generation and reasoning tasks with the same weights — no task-specific modules, no pretrained backbones, no patchwork.
 
